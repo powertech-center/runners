@@ -36,7 +36,7 @@ runs:
     - name: Bootstrap
       if: runner.os == 'Windows'
       shell: pwsh
-      run: choco install wget make zip unzip pkgconfiglite -y --no-progress
+      run: choco install wget zip -y --no-progress
 
     # -- Checkout -------------------------------------------------------------
     - name: Checkout repository
@@ -144,7 +144,7 @@ runs:
         case "${{ runner.os }}" in
           Linux)   sudo apt-get update -qq && sudo apt-get install -y -qq cmake ;;
           macOS)   brew install cmake ;;
-          Windows) choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y --no-progress ;;
+          Windows) ;; # CMake is pre-installed
         esac
 
     - name: Install Meson
@@ -237,21 +237,17 @@ runs:
     - name: Install Crossler
       if: contains(inputs.tools, 'crossler') && runner.os == 'Windows'
       shell: pwsh
-      run: irm https://raw.githubusercontent.com/powertech-center/crossler/master/scripts/install.ps1 | iex
+      run: |
+        $script = irm https://raw.githubusercontent.com/powertech-center/crossler/master/scripts/install.ps1
+        & ([scriptblock]::Create($script)) -NoPause
 
     - name: Install PowerShell
       if: contains(inputs.tools, 'pwsh')
       shell: bash
       run: |
-        case "${{ runner.os }}" in
-          Linux)
-            wget -q "https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb" -O /tmp/ms-prod.deb
-            sudo dpkg -i /tmp/ms-prod.deb && rm /tmp/ms-prod.deb
-            sudo apt-get update -qq && sudo apt-get install -y -qq powershell
-            ;;
-          macOS)   brew install powershell/tap/powershell ;;
-          Windows) ;; # PowerShell is pre-installed
-        esac
+        # PowerShell is already preinstalled on the standard GitHub-hosted
+        # Linux, macOS, and Windows runners covered by this action.
+        :
 
     # Validate installed tools
     - name: Validate installed tools
@@ -273,7 +269,7 @@ runs:
             java)       java --version 2>/dev/null | head -1 || echo "java: not found" ;;
             gradle)     gradle --version 2>/dev/null | head -3 | tail -1 || echo "gradle: not found" ;;
             flutter)    flutter --version 2>/dev/null || echo "flutter: not found" ;;
-            crossler)   crossler --version 2>/dev/null || echo "crossler: not found" ;;
+            crossler)   crossler version 2>/dev/null || echo "crossler: not found" ;;
             pwsh)       pwsh --version 2>/dev/null || echo "pwsh: not found" ;;
             *)          echo "Unknown tool: $tool" ;;
           esac

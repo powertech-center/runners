@@ -202,14 +202,7 @@ runs:
     - name: Install PowerShell
       if: contains(inputs.tools, 'pwsh')
       shell: bash
-      run: |
-        apk add --no-cache ca-certificates krb5-libs libgcc libintl libssl3 libstdc++ icu-libs
-        curl -fsSL "https://github.com/PowerShell/PowerShell/releases/download/v7.6.0/powershell-7.6.0-linux-musl-${{ steps.parse.outputs.arch }}.tar.gz" -o /tmp/pwsh.tar.gz
-        mkdir -p /opt/microsoft/powershell/7
-        tar xzf /tmp/pwsh.tar.gz -C /opt/microsoft/powershell/7
-        chmod +x /opt/microsoft/powershell/7/pwsh
-        ln -sf /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh
-        rm /tmp/pwsh.tar.gz
+      run: apk add --no-cache powershell
 
     # Validate installed tools
     - name: Validate installed tools
@@ -231,7 +224,7 @@ runs:
             java)       java --version 2>/dev/null | head -1 || echo "java: not found" ;;
             gradle)     gradle --version 2>/dev/null | head -3 | tail -1 || echo "gradle: not found" ;;
             flutter)    flutter --version 2>/dev/null || echo "flutter: not found" ;;
-            crossler)   crossler --version 2>/dev/null || echo "crossler: not found" ;;
+            crossler)   crossler version 2>/dev/null || echo "crossler: not found" ;;
             pwsh)       pwsh --version 2>/dev/null || echo "pwsh: not found" ;;
             *)          echo "Unknown tool: $tool" ;;
           esac

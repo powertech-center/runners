@@ -41,7 +41,7 @@ on:
 jobs:
   run:
     name: ${{ inputs.name }}
-    runs-on: windows-2025
+    runs-on: windows-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - uses: powertech-center/runners/std@main

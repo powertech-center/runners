@@ -10,7 +10,7 @@ Reusable GitHub Actions jobs for cross-platform CI on **8 target platforms**. No
 | `linux-x64-musl` | `ubuntu-24.04` + `alpine:latest` | `bash` |
 | `linux-arm64-gnu` | `ubuntu-24.04-arm` | `bash` |
 | `linux-arm64-musl` | `ubuntu-24.04-arm` + `alpine:latest` | `bash` |
-| `windows-x64` | `windows-2025` | `pwsh` |
+| `windows-x64` | `windows-latest` | `pwsh` |
 | `windows-arm64` | `windows-11-arm` | `pwsh` |
 | `macos-x64` | `macos-15` | `bash` |
 | `macos-arm64` | `macos-15` | `bash` |
