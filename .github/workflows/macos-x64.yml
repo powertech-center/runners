@@ -1,0 +1,55 @@
+name: "macos-x64"
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: "Job display name"
+        required: false
+        type: string
+        default: "Run (macos-x64)"
+      command:
+        description: "Command to execute"
+        required: true
+        type: string
+      tools:
+        description: "Space-separated list of tools to install (cmake, python, etc.)"
+        required: false
+        type: string
+        default: ""
+      checkout:
+        description: "Checkout the calling repository"
+        required: false
+        type: boolean
+        default: true
+      artifact-name-prefix:
+        description: "Base artifact name. Full name: {prefix}-macos-x64"
+        required: false
+        type: string
+        default: ""
+      artifact-path:
+        description: "Path to download artifacts to"
+        required: false
+        type: string
+        default: "./artifacts"
+      timeout-minutes:
+        description: "Job timeout in minutes"
+        required: false
+        type: number
+        default: 30
+
+jobs:
+  run:
+    name: ${{ inputs.name }}
+    runs-on: macos-15
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: powertech-center/runners/run@main
+        with:
+          platform: macos-x64
+          command: ${{ inputs.command }}
+          shell: bash
+          tools: ${{ inputs.tools }}
+          checkout: ${{ inputs.checkout }}
+          artifact-name-prefix: ${{ inputs.artifact-name-prefix }}
+          artifact-path: ${{ inputs.artifact-path }}
