@@ -1,0 +1,294 @@
+name: "Run"
+description: "Sets up the runner environment, installs tools, downloads artifacts, and executes a command"
+
+inputs:
+  platform:
+    description: "Target platform triplet (e.g., linux-x64-gnu)"
+    required: true
+  command:
+    description: "Command to execute"
+    required: true
+  shell:
+    description: "Shell to use (bash or pwsh)"
+    required: false
+    default: "bash"
+  tools:
+    description: "Space-separated list of tools to install"
+    required: false
+    default: ""
+  checkout:
+    description: "Checkout the calling repository"
+    required: false
+    default: "true"
+  artifact-name-prefix:
+    description: "Base artifact name. Full name: {prefix}-{platform}"
+    required: false
+    default: ""
+  artifact-path:
+    description: "Path to download artifacts to"
+    required: false
+    default: "./artifacts"
+
+runs:
+  using: "composite"
+  steps:
+    # -- Bootstrap ------------------------------------------------------------
+    - name: Bootstrap
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: choco install wget make zip unzip pkgconfiglite -y --no-progress
+
+    # -- Checkout -------------------------------------------------------------
+    - name: Checkout repository
+      if: inputs.checkout == 'true'
+      uses: actions/checkout@v5
+
+    # -- Setup runner environment ---------------------------------------------
+    - name: Setup runner
+      id: parse
+      shell: bash
+      run: |
+        PLATFORM="${{ inputs.platform }}"
+
+        case "$PLATFORM" in
+          linux-x64-gnu|linux-arm64-gnu|\
+          windows-x64|windows-arm64|macos-x64|macos-arm64)
+            ;;
+          *)
+            echo "::error::Unknown platform: $PLATFORM"
+            exit 1
+            ;;
+        esac
+
+        IFS='-' read -r OS ARCH LIBC <<< "$PLATFORM"
+
+        echo "PT_OS=$OS" >> "$GITHUB_ENV"
+        echo "PT_ARCH=$ARCH" >> "$GITHUB_ENV"
+        echo "PT_LIBC=$LIBC" >> "$GITHUB_ENV"
+        echo "PT_PLATFORM=$PLATFORM" >> "$GITHUB_ENV"
+
+        echo "os=$OS" >> "$GITHUB_OUTPUT"
+        echo "arch=$ARCH" >> "$GITHUB_OUTPUT"
+        echo "libc=$LIBC" >> "$GITHUB_OUTPUT"
+
+        echo "::notice::Platform: $PLATFORM (os=$OS, arch=$ARCH, libc=${LIBC:-none})"
+
+    - name: Detect emulation
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        EXPECTED_ARCH="${{ steps.parse.outputs.arch }}"
+        EMULATED="false"
+
+        MACHINE=$(uname -m)
+        case "$MACHINE" in
+          x86_64|amd64) ACTUAL_ARCH="x64" ;;
+          aarch64|arm64) ACTUAL_ARCH="arm64" ;;
+          *) ACTUAL_ARCH="$MACHINE" ;;
+        esac
+
+        if [ "$ACTUAL_ARCH" != "$EXPECTED_ARCH" ]; then
+          EMULATED="true"
+          echo "::warning::Running under emulation: expected $EXPECTED_ARCH, detected $ACTUAL_ARCH"
+        fi
+
+        echo "PT_EMULATED=$EMULATED" >> "$GITHUB_ENV"
+
+    - name: Detect emulation
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $expectedArch = '${{ steps.parse.outputs.arch }}'
+        $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+
+        switch ($osArch) {
+          'X64'   { $actualArch = 'x64' }
+          'Arm64' { $actualArch = 'arm64' }
+          default { $actualArch = $osArch.ToLowerInvariant() }
+        }
+
+        $emulated = 'false'
+        if ($actualArch -ne $expectedArch) {
+          $emulated = 'true'
+          Write-Host "::warning::Running under emulation: expected $expectedArch, detected $actualArch"
+        }
+
+        "PT_EMULATED=$emulated" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+    # -- Setup tools ----------------------------------------------------------
+
+    - name: Install GCC
+      if: contains(inputs.tools, 'gcc')
+      shell: bash
+      run: |
+        case "${{ runner.os }}" in
+          Linux)   sudo apt-get update -qq && sudo apt-get install -y -qq build-essential ;;
+          macOS)   brew install gcc ;;
+          Windows) choco install mingw -y --no-progress ;;
+        esac
+
+    - name: Install Clang
+      if: contains(inputs.tools, 'clang')
+      shell: bash
+      run: |
+        case "${{ runner.os }}" in
+          Linux)   sudo apt-get update -qq && sudo apt-get install -y -qq clang ;;
+          macOS)   ;; # Apple Clang is pre-installed
+          Windows) choco install llvm -y --no-progress ;;
+        esac
+
+    - name: Install CMake
+      if: contains(inputs.tools, 'cmake')
+      shell: bash
+      run: |
+        case "${{ runner.os }}" in
+          Linux)   sudo apt-get update -qq && sudo apt-get install -y -qq cmake ;;
+          macOS)   brew install cmake ;;
+          Windows) choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y --no-progress ;;
+        esac
+
+    - name: Install Meson
+      if: contains(inputs.tools, 'meson')
+      shell: bash
+      run: |
+        case "${{ runner.os }}" in
+          Linux)   pip3 install --user meson ;;
+          macOS)   brew install meson ;;
+          Windows) pip install meson ;;
+        esac
+
+    - name: Install Python
+      if: contains(inputs.tools, 'python')
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.x"
+
+    - name: Install Go
+      if: contains(inputs.tools, 'go')
+      uses: actions/setup-go@v5
+      with:
+        go-version: stable
+        cache: false
+
+    - name: Install Rust
+      if: contains(inputs.tools, 'rust')
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install .NET
+      if: contains(inputs.tools, 'dotnet')
+      uses: actions/setup-dotnet@v5
+
+    - name: Install Node.js
+      if: contains(inputs.tools, 'nodejs')
+      uses: actions/setup-node@v5
+
+    - name: Install Java
+      if: contains(inputs.tools, 'java')
+      uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: 21
+
+    - name: Install Gradle
+      if: contains(inputs.tools, 'gradle')
+      uses: gradle/actions/setup-gradle@v5
+
+    - name: Install Flutter
+      if: contains(inputs.tools, 'flutter') && inputs.platform == 'linux-x64-gnu'
+      uses: subosito/flutter-action@v2
+      with:
+        channel: stable
+
+    - name: Install Flutter
+      if: contains(inputs.tools, 'flutter') && (inputs.platform == 'macos-x64' || inputs.platform == 'macos-arm64' || inputs.platform == 'windows-x64')
+      uses: subosito/flutter-action@v2
+      with:
+        channel: stable
+
+    - name: Install Flutter
+      if: contains(inputs.tools, 'flutter') && inputs.platform == 'windows-arm64'
+      uses: subosito/flutter-action@v2
+      with:
+        channel: stable
+        architecture: x64
+
+    - name: Install Flutter
+      if: contains(inputs.tools, 'flutter') && inputs.platform == 'linux-arm64-gnu'
+      shell: bash
+      run: |
+        FLUTTER_ROOT="${RUNNER_TEMP:-/tmp}/flutter"
+        rm -rf "$FLUTTER_ROOT"
+        git clone --depth=1 --branch stable https://github.com/flutter/flutter.git "$FLUTTER_ROOT"
+        echo "$FLUTTER_ROOT/bin" >> "$GITHUB_PATH"
+        git config --global --add safe.directory "$FLUTTER_ROOT"
+        export PATH="$FLUTTER_ROOT/bin:$PATH"
+        flutter --version
+
+    - name: Install Crossler
+      if: contains(inputs.tools, 'crossler') && runner.os != 'Windows'
+      shell: bash
+      run: |
+        if [ "${{ runner.os }}" = "Linux" ] && command -v sudo >/dev/null 2>&1; then
+          curl -fsSL https://raw.githubusercontent.com/powertech-center/crossler/master/scripts/install.sh | sudo -E sh
+        else
+          curl -fsSL https://raw.githubusercontent.com/powertech-center/crossler/master/scripts/install.sh | sh
+        fi
+
+    - name: Install Crossler
+      if: contains(inputs.tools, 'crossler') && runner.os == 'Windows'
+      shell: pwsh
+      run: irm https://raw.githubusercontent.com/powertech-center/crossler/master/scripts/install.ps1 | iex
+
+    - name: Install PowerShell
+      if: contains(inputs.tools, 'pwsh')
+      shell: bash
+      run: |
+        case "${{ runner.os }}" in
+          Linux)
+            wget -q "https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb" -O /tmp/ms-prod.deb
+            sudo dpkg -i /tmp/ms-prod.deb && rm /tmp/ms-prod.deb
+            sudo apt-get update -qq && sudo apt-get install -y -qq powershell
+            ;;
+          macOS)   brew install powershell/tap/powershell ;;
+          Windows) ;; # PowerShell is pre-installed
+        esac
+
+    # Validate installed tools
+    - name: Validate installed tools
+      if: inputs.tools != ''
+      shell: bash
+      run: |
+        echo "::group::Installed tool versions"
+        for tool in ${{ inputs.tools }}; do
+          case "$tool" in
+            gcc)        gcc --version 2>/dev/null | head -1 || echo "gcc: not found" ;;
+            clang)      clang --version 2>/dev/null | head -1 || echo "clang: not found" ;;
+            cmake)      cmake --version 2>/dev/null | head -1 || echo "cmake: not found" ;;
+            meson)      meson --version 2>/dev/null || echo "meson: not found" ;;
+            python)     python3 --version 2>/dev/null || python --version 2>/dev/null || echo "python: not found" ;;
+            go)         go version 2>/dev/null || echo "go: not found" ;;
+            rust)       rustc --version 2>/dev/null || echo "rustc: not found" ;;
+            dotnet)     dotnet --version 2>/dev/null || echo "dotnet: not found" ;;
+            nodejs)     node --version 2>/dev/null || echo "node: not found" ;;
+            java)       java --version 2>/dev/null | head -1 || echo "java: not found" ;;
+            gradle)     gradle --version 2>/dev/null | head -3 | tail -1 || echo "gradle: not found" ;;
+            flutter)    flutter --version 2>/dev/null || echo "flutter: not found" ;;
+            crossler)   crossler --version 2>/dev/null || echo "crossler: not found" ;;
+            pwsh)       pwsh --version 2>/dev/null || echo "pwsh: not found" ;;
+            *)          echo "Unknown tool: $tool" ;;
+          esac
+        done
+        echo "::endgroup::"
+
+    # -- Download artifact ----------------------------------------------------
+    - name: Download artifact
+      if: inputs.artifact-name-prefix != ''
+      uses: actions/download-artifact@v5
+      with:
+        name: ${{ inputs.artifact-name-prefix }}-${{ inputs.platform }}
+        path: ${{ inputs.artifact-path }}
+
+    # -- Run command ----------------------------------------------------------
+    - name: Run
+      shell: ${{ inputs.shell }}
+      run: ${{ inputs.command }}

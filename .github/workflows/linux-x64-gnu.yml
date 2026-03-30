@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
-      - uses: powertech-center/runners/run@main
+      - uses: powertech-center/runners/std@main
         with:
           platform: linux-x64-gnu
           command: ${{ inputs.command }}

@@ -10,54 +10,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./run
+      - uses: actions/checkout@v5
+      - uses: ./std
         with:
           platform: linux-x64-gnu
           shell: bash
           checkout: false
-          tools: "gcc clang cmake meson python go rust dotnet node java gradle flutter crossler pwsh"
-          command: |
-            failed=0
-
-            echo "=== Pre-installed utilities ==="
-            for cmd in bash git curl wget zip unzip tar gzip make ninja pkg-config; do
-              if command -v "$cmd" > /dev/null 2>&1; then
-                echo "OK: $cmd"
-              else
-                echo "FAIL: $cmd not found"
-                failed=1
-              fi
-            done
-
-            echo ""
-            echo "=== Tools ==="
-            for cmd in gcc clang cmake meson go rustc dotnet node java gradle flutter crossler pwsh; do
-              if command -v "$cmd" > /dev/null 2>&1; then
-                echo "OK: $cmd"
-              else
-                echo "FAIL: $cmd not found"
-                failed=1
-              fi
-            done
-
-            if command -v python3 > /dev/null 2>&1; then
-              echo "OK: python3"
-            elif command -v python > /dev/null 2>&1; then
-              echo "OK: python"
-            else
-              echo "FAIL: python not found"
-              failed=1
-            fi
-
-            if [ "$failed" -ne 0 ]; then
-              echo ""
-              echo "Some checks failed!"
-              exit 1
-            fi
-
-            echo ""
-            echo "All checks passed."
+          tools: "gcc clang cmake meson python go rust dotnet nodejs java gradle flutter crossler pwsh"
+          command: "pwsh ./test.ps1"
 
   linux-x64-musl:
     name: "Test (linux-x64-musl)"
@@ -65,118 +25,28 @@ jobs:
     container: alpine:latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./run
+      - uses: actions/checkout@v5
+      - uses: ./musl
         with:
           platform: linux-x64-musl
           shell: bash
           checkout: false
-          tools: "gcc clang cmake meson python go rust dotnet node java gradle flutter crossler pwsh"
-          command: |
-            failed=0
-
-            echo "=== Pre-installed utilities ==="
-            for cmd in bash git curl wget zip unzip tar gzip make ninja pkg-config; do
-              if command -v "$cmd" > /dev/null 2>&1; then
-                echo "OK: $cmd"
-              else
-                echo "FAIL: $cmd not found"
-                failed=1
-              fi
-            done
-
-            echo ""
-            echo "=== Tools ==="
-            for cmd in gcc clang cmake meson go rustc dotnet node java gradle crossler pwsh; do
-              if command -v "$cmd" > /dev/null 2>&1; then
-                echo "OK: $cmd"
-              else
-                echo "FAIL: $cmd not found"
-                failed=1
-              fi
-            done
-
-            if command -v python3 > /dev/null 2>&1; then
-              echo "OK: python3"
-            elif command -v python > /dev/null 2>&1; then
-              echo "OK: python"
-            else
-              echo "FAIL: python not found"
-              failed=1
-            fi
-
-            # Flutter on musl installs dart instead
-            if command -v flutter > /dev/null 2>&1; then
-              echo "OK: flutter"
-            elif command -v dart > /dev/null 2>&1; then
-              echo "OK: dart (flutter/musl fallback)"
-            else
-              echo "FAIL: flutter/dart not found"
-              failed=1
-            fi
-
-            if [ "$failed" -ne 0 ]; then
-              echo ""
-              echo "Some checks failed!"
-              exit 1
-            fi
-
-            echo ""
-            echo "All checks passed."
+          tools: "gcc clang cmake meson python go rust dotnet nodejs java gradle flutter crossler pwsh"
+          command: "pwsh ./test.ps1"
 
   linux-arm64-gnu:
     name: "Test (linux-arm64-gnu)"
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./run
+      - uses: actions/checkout@v5
+      - uses: ./std
         with:
           platform: linux-arm64-gnu
           shell: bash
           checkout: false
-          tools: "gcc clang cmake meson python go rust dotnet node java gradle flutter crossler pwsh"
-          command: |
-            failed=0
-
-            echo "=== Pre-installed utilities ==="
-            for cmd in bash git curl wget zip unzip tar gzip make ninja pkg-config; do
-              if command -v "$cmd" > /dev/null 2>&1; then
-                echo "OK: $cmd"
-              else
-                echo "FAIL: $cmd not found"
-                failed=1
-              fi
-            done
-
-            echo ""
-            echo "=== Tools ==="
-            for cmd in gcc clang cmake meson go rustc dotnet node java gradle flutter crossler pwsh; do
-              if command -v "$cmd" > /dev/null 2>&1; then
-                echo "OK: $cmd"
-              else
-                echo "FAIL: $cmd not found"
-                failed=1
-              fi
-            done
-
-            if command -v python3 > /dev/null 2>&1; then
-              echo "OK: python3"
-            elif command -v python > /dev/null 2>&1; then
-              echo "OK: python"
-            else
-              echo "FAIL: python not found"
-              failed=1
-            fi
-
-            if [ "$failed" -ne 0 ]; then
-              echo ""
-              echo "Some checks failed!"
-              exit 1
-            fi
-
-            echo ""
-            echo "All checks passed."
+          tools: "gcc clang cmake meson python go rust dotnet nodejs java gradle flutter crossler pwsh"
+          command: "pwsh ./test.ps1"
 
   linux-arm64-musl:
     name: "Test (linux-arm64-musl)"
@@ -184,64 +54,23 @@ jobs:
     container: alpine:latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./run
+      - name: pseudo-actions/checkout@v5
+        shell: sh
+        run: |
+          apk add --no-cache git
+          git config --global init.defaultBranch main
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          git init
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout FETCH_HEAD
+      - uses: ./musl
         with:
           platform: linux-arm64-musl
           shell: bash
           checkout: false
-          tools: "gcc clang cmake meson python go rust dotnet node java gradle flutter crossler pwsh"
-          command: |
-            failed=0
-
-            echo "=== Pre-installed utilities ==="
-            for cmd in bash git curl wget zip unzip tar gzip make ninja pkg-config; do
-              if command -v "$cmd" > /dev/null 2>&1; then
-                echo "OK: $cmd"
-              else
-                echo "FAIL: $cmd not found"
-                failed=1
-              fi
-            done
-
-            echo ""
-            echo "=== Tools ==="
-            for cmd in gcc clang cmake meson go rustc dotnet node java gradle crossler pwsh; do
-              if command -v "$cmd" > /dev/null 2>&1; then
-                echo "OK: $cmd"
-              else
-                echo "FAIL: $cmd not found"
-                failed=1
-              fi
-            done
-
-            if command -v python3 > /dev/null 2>&1; then
-              echo "OK: python3"
-            elif command -v python > /dev/null 2>&1; then
-              echo "OK: python"
-            else
-              echo "FAIL: python not found"
-              failed=1
-            fi
-
-            # Flutter on musl installs dart instead
-            if command -v flutter > /dev/null 2>&1; then
-              echo "OK: flutter"
-            elif command -v dart > /dev/null 2>&1; then
-              echo "OK: dart (flutter/musl fallback)"
-            else
-              echo "FAIL: flutter/dart not found"
-              failed=1
-            fi
-
-            if [ "$failed" -ne 0 ]; then
-              echo ""
-              echo "Some checks failed!"
-              exit 1
-            fi
-
-            echo ""
-            echo "All checks passed."
+          tools: "gcc clang cmake meson python go rust dotnet nodejs java gradle flutter crossler pwsh"
+          command: "pwsh ./test.ps1"
 
   # ── macOS ───────────────────────────────────────────────────────────
   macos-x64:
@@ -249,108 +78,28 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./run
+      - uses: actions/checkout@v5
+      - uses: ./std
         with:
           platform: macos-x64
           shell: bash
           checkout: false
-          tools: "gcc clang cmake meson python go rust dotnet node java gradle flutter crossler pwsh"
-          command: |
-            failed=0
-
-            echo "=== Pre-installed utilities ==="
-            for cmd in bash git curl wget zip unzip tar gzip make ninja pkg-config; do
-              if command -v "$cmd" > /dev/null 2>&1; then
-                echo "OK: $cmd"
-              else
-                echo "FAIL: $cmd not found"
-                failed=1
-              fi
-            done
-
-            echo ""
-            echo "=== Tools ==="
-            for cmd in gcc clang cmake meson go rustc dotnet node java gradle flutter crossler pwsh; do
-              if command -v "$cmd" > /dev/null 2>&1; then
-                echo "OK: $cmd"
-              else
-                echo "FAIL: $cmd not found"
-                failed=1
-              fi
-            done
-
-            if command -v python3 > /dev/null 2>&1; then
-              echo "OK: python3"
-            elif command -v python > /dev/null 2>&1; then
-              echo "OK: python"
-            else
-              echo "FAIL: python not found"
-              failed=1
-            fi
-
-            if [ "$failed" -ne 0 ]; then
-              echo ""
-              echo "Some checks failed!"
-              exit 1
-            fi
-
-            echo ""
-            echo "All checks passed."
+          tools: "gcc clang cmake meson python go rust dotnet nodejs java gradle flutter crossler pwsh"
+          command: "pwsh ./test.ps1"
 
   macos-arm64:
     name: "Test (macos-arm64)"
     runs-on: macos-15
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./run
+      - uses: actions/checkout@v5
+      - uses: ./std
         with:
           platform: macos-arm64
           shell: bash
           checkout: false
-          tools: "gcc clang cmake meson python go rust dotnet node java gradle flutter crossler pwsh"
-          command: |
-            failed=0
-
-            echo "=== Pre-installed utilities ==="
-            for cmd in bash git curl wget zip unzip tar gzip make ninja pkg-config; do
-              if command -v "$cmd" > /dev/null 2>&1; then
-                echo "OK: $cmd"
-              else
-                echo "FAIL: $cmd not found"
-                failed=1
-              fi
-            done
-
-            echo ""
-            echo "=== Tools ==="
-            for cmd in gcc clang cmake meson go rustc dotnet node java gradle flutter crossler pwsh; do
-              if command -v "$cmd" > /dev/null 2>&1; then
-                echo "OK: $cmd"
-              else
-                echo "FAIL: $cmd not found"
-                failed=1
-              fi
-            done
-
-            if command -v python3 > /dev/null 2>&1; then
-              echo "OK: python3"
-            elif command -v python > /dev/null 2>&1; then
-              echo "OK: python"
-            else
-              echo "FAIL: python not found"
-              failed=1
-            fi
-
-            if [ "$failed" -ne 0 ]; then
-              echo ""
-              echo "Some checks failed!"
-              exit 1
-            fi
-
-            echo ""
-            echo "All checks passed."
+          tools: "gcc clang cmake meson python go rust dotnet nodejs java gradle flutter crossler pwsh"
+          command: "pwsh ./test.ps1"
 
   # ── Windows ─────────────────────────────────────────────────────────
   windows-x64:
@@ -358,137 +107,25 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./run
+      - uses: actions/checkout@v5
+      - uses: ./std
         with:
           platform: windows-x64
           shell: pwsh
           checkout: false
-          tools: "gcc clang cmake meson python go rust dotnet node java gradle flutter crossler"
-          command: |
-            $failed = 0
-
-            Write-Host "=== Pre-installed utilities ==="
-            foreach ($cmd in @("bash", "git", "curl", "wget", "zip", "unzip", "tar", "make", "ninja", "pkg-config")) {
-              if (Get-Command $cmd -ErrorAction SilentlyContinue) {
-                Write-Host "OK: $cmd"
-              } else {
-                Write-Host "FAIL: $cmd not found"
-                $failed = 1
-              }
-            }
-
-            # gzip is typically available via Git for Windows
-            if ((Get-Command gzip -ErrorAction SilentlyContinue) -or (Get-Command "C:\Program Files\Git\usr\bin\gzip.exe" -ErrorAction SilentlyContinue)) {
-              Write-Host "OK: gzip"
-            } else {
-              Write-Host "FAIL: gzip not found"
-              $failed = 1
-            }
-
-            Write-Host ""
-            Write-Host "=== Tools ==="
-            foreach ($cmd in @("gcc", "clang", "cmake", "meson", "go", "rustc", "dotnet", "node", "java", "gradle", "flutter", "crossler")) {
-              if (Get-Command $cmd -ErrorAction SilentlyContinue) {
-                Write-Host "OK: $cmd"
-              } else {
-                Write-Host "FAIL: $cmd not found"
-                $failed = 1
-              }
-            }
-
-            if (Get-Command python3 -ErrorAction SilentlyContinue) {
-              Write-Host "OK: python3"
-            } elseif (Get-Command python -ErrorAction SilentlyContinue) {
-              Write-Host "OK: python"
-            } else {
-              Write-Host "FAIL: python not found"
-              $failed = 1
-            }
-
-            # pwsh is pre-installed on Windows
-            if (Get-Command pwsh -ErrorAction SilentlyContinue) {
-              Write-Host "OK: pwsh (pre-installed)"
-            } else {
-              Write-Host "FAIL: pwsh not found"
-              $failed = 1
-            }
-
-            if ($failed -ne 0) {
-              Write-Host ""
-              Write-Host "Some checks failed!"
-              exit 1
-            }
-
-            Write-Host ""
-            Write-Host "All checks passed."
+          tools: "gcc clang cmake meson python go rust dotnet nodejs java gradle flutter crossler pwsh"
+          command: "pwsh ./test.ps1"
 
   windows-arm64:
     name: "Test (windows-arm64)"
     runs-on: windows-11-arm
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./run
+      - uses: actions/checkout@v5
+      - uses: ./std
         with:
           platform: windows-arm64
           shell: pwsh
           checkout: false
-          tools: "gcc clang cmake meson python go rust dotnet node java gradle flutter crossler"
-          command: |
-            $failed = 0
-
-            Write-Host "=== Pre-installed utilities ==="
-            foreach ($cmd in @("bash", "git", "curl", "wget", "zip", "unzip", "tar", "make", "ninja", "pkg-config")) {
-              if (Get-Command $cmd -ErrorAction SilentlyContinue) {
-                Write-Host "OK: $cmd"
-              } else {
-                Write-Host "FAIL: $cmd not found"
-                $failed = 1
-              }
-            }
-
-            # gzip is typically available via Git for Windows
-            if ((Get-Command gzip -ErrorAction SilentlyContinue) -or (Get-Command "C:\Program Files\Git\usr\bin\gzip.exe" -ErrorAction SilentlyContinue)) {
-              Write-Host "OK: gzip"
-            } else {
-              Write-Host "FAIL: gzip not found"
-              $failed = 1
-            }
-
-            Write-Host ""
-            Write-Host "=== Tools ==="
-            foreach ($cmd in @("gcc", "clang", "cmake", "meson", "go", "rustc", "dotnet", "node", "java", "gradle", "flutter", "crossler")) {
-              if (Get-Command $cmd -ErrorAction SilentlyContinue) {
-                Write-Host "OK: $cmd"
-              } else {
-                Write-Host "FAIL: $cmd not found"
-                $failed = 1
-              }
-            }
-
-            if (Get-Command python3 -ErrorAction SilentlyContinue) {
-              Write-Host "OK: python3"
-            } elseif (Get-Command python -ErrorAction SilentlyContinue) {
-              Write-Host "OK: python"
-            } else {
-              Write-Host "FAIL: python not found"
-              $failed = 1
-            }
-
-            # pwsh is pre-installed on Windows
-            if (Get-Command pwsh -ErrorAction SilentlyContinue) {
-              Write-Host "OK: pwsh (pre-installed)"
-            } else {
-              Write-Host "FAIL: pwsh not found"
-              $failed = 1
-            }
-
-            if ($failed -ne 0) {
-              Write-Host ""
-              Write-Host "Some checks failed!"
-              exit 1
-            }
-
-            Write-Host ""
-            Write-Host "All checks passed."
+          tools: "gcc clang cmake meson python go rust dotnet nodejs java gradle flutter crossler pwsh"
+          command: "pwsh ./test.ps1"

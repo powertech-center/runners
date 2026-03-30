@@ -1,0 +1,287 @@
+name: "Run"
+description: "Sets up the musl/Alpine runner environment, installs tools, downloads artifacts, and executes a command"
+
+inputs:
+  platform:
+    description: "Target platform triplet (linux-x64-musl or linux-arm64-musl)"
+    required: true
+  command:
+    description: "Command to execute"
+    required: true
+  shell:
+    description: "Shell to use (bash or pwsh)"
+    required: false
+    default: "bash"
+  tools:
+    description: "Space-separated list of tools to install"
+    required: false
+    default: ""
+  checkout:
+    description: "Checkout the calling repository"
+    required: false
+    default: "true"
+  artifact-name-prefix:
+    description: "Base artifact name. Full name: {prefix}-{platform}"
+    required: false
+    default: ""
+  artifact-path:
+    description: "Path to download artifacts to"
+    required: false
+    default: "./artifacts"
+
+runs:
+  using: "composite"
+  steps:
+    # -- Bootstrap ------------------------------------------------------------
+    - name: Bootstrap
+      shell: sh
+      run: apk add --no-cache bash git curl wget zip unzip make ninja pkgconf
+
+    # -- Checkout -------------------------------------------------------------
+    # Shell-based checkout to avoid JS actions that fail in Alpine containers
+    # on arm64 runners (GitHub Runner does not support JS actions in Alpine on arm64).
+    - name: Checkout repository
+      if: inputs.checkout == 'true'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        git config --global init.defaultBranch main
+        git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+        git init
+        git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+        git fetch --depth=1 origin "${GITHUB_SHA}"
+        git checkout FETCH_HEAD
+
+    # -- Setup runner environment ---------------------------------------------
+    - name: Setup runner
+      id: parse
+      shell: bash
+      run: |
+        PLATFORM="${{ inputs.platform }}"
+
+        case "$PLATFORM" in
+          linux-x64-musl|linux-arm64-musl)
+            ;;
+          *)
+            echo "::error::Unknown musl platform: $PLATFORM"
+            exit 1
+            ;;
+        esac
+
+        IFS='-' read -r OS ARCH LIBC <<< "$PLATFORM"
+
+        echo "PT_OS=$OS" >> "$GITHUB_ENV"
+        echo "PT_ARCH=$ARCH" >> "$GITHUB_ENV"
+        echo "PT_LIBC=$LIBC" >> "$GITHUB_ENV"
+        echo "PT_PLATFORM=$PLATFORM" >> "$GITHUB_ENV"
+
+        echo "os=$OS" >> "$GITHUB_OUTPUT"
+        echo "arch=$ARCH" >> "$GITHUB_OUTPUT"
+        echo "libc=$LIBC" >> "$GITHUB_OUTPUT"
+
+        echo "::notice::Platform: $PLATFORM (os=$OS, arch=$ARCH, libc=$LIBC)"
+
+    - name: Detect emulation
+      shell: bash
+      run: |
+        EXPECTED_ARCH="${{ steps.parse.outputs.arch }}"
+        EMULATED="false"
+
+        MACHINE=$(uname -m)
+        case "$MACHINE" in
+          x86_64|amd64) ACTUAL_ARCH="x64" ;;
+          aarch64|arm64) ACTUAL_ARCH="arm64" ;;
+          *) ACTUAL_ARCH="$MACHINE" ;;
+        esac
+
+        if [ "$ACTUAL_ARCH" != "$EXPECTED_ARCH" ]; then
+          EMULATED="true"
+          echo "::warning::Running under emulation: expected $EXPECTED_ARCH, detected $ACTUAL_ARCH"
+        fi
+
+        echo "PT_EMULATED=$EMULATED" >> "$GITHUB_ENV"
+
+    # -- Setup tools ----------------------------------------------------------
+
+    - name: Install GCC
+      if: contains(inputs.tools, 'gcc')
+      shell: bash
+      run: apk add --no-cache build-base
+
+    - name: Install Clang
+      if: contains(inputs.tools, 'clang')
+      shell: bash
+      run: apk add --no-cache clang compiler-rt
+
+    - name: Install CMake
+      if: contains(inputs.tools, 'cmake')
+      shell: bash
+      run: apk add --no-cache cmake
+
+    - name: Install Meson
+      if: contains(inputs.tools, 'meson')
+      shell: bash
+      run: apk add --no-cache meson
+
+    - name: Install Python
+      if: contains(inputs.tools, 'python')
+      shell: bash
+      run: apk add --no-cache python3 py3-pip
+
+    - name: Install Go
+      if: contains(inputs.tools, 'go')
+      shell: bash
+      run: apk add --no-cache go
+
+    - name: Install Rust
+      if: contains(inputs.tools, 'rust')
+      shell: bash
+      run: apk add --no-cache rust cargo
+
+    - name: Install .NET
+      if: contains(inputs.tools, 'dotnet')
+      shell: bash
+      run: apk add --no-cache dotnet10-sdk
+
+    - name: Install Node.js
+      if: contains(inputs.tools, 'nodejs')
+      shell: bash
+      run: apk add --no-cache nodejs npm
+
+    - name: Install Java
+      if: contains(inputs.tools, 'java')
+      shell: bash
+      run: apk add --no-cache openjdk21
+
+    - name: Install Gradle
+      if: contains(inputs.tools, 'gradle')
+      shell: bash
+      run: apk add --no-cache gradle
+
+    - name: Install Flutter
+      if: contains(inputs.tools, 'flutter') && inputs.platform == 'linux-x64-musl'
+      shell: bash
+      run: |
+        apk add --no-cache gcompat libstdc++ jq xz
+        FLUTTER_ROOT="${RUNNER_TEMP:-/tmp}/flutter"
+        rm -rf "$FLUTTER_ROOT"
+        [ -f /lib/ld-linux-x86-64.so.2 ] || \
+          ln -s /lib/ld-musl-x86_64.so.1 /lib/ld-linux-x86-64.so.2 2>/dev/null || true
+        FLUTTER_VERSION=$(wget -qO- "https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json" | \
+          jq -r 'first(.releases[] | select(.channel == "stable") | .version)')
+        wget -q "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" \
+          -O /tmp/flutter.tar.xz
+        mkdir -p "$(dirname "$FLUTTER_ROOT")"
+        tar xf /tmp/flutter.tar.xz -C "$(dirname "$FLUTTER_ROOT")"
+        rm /tmp/flutter.tar.xz
+        echo "$FLUTTER_ROOT/bin" >> "$GITHUB_PATH"
+        git config --global --add safe.directory "$FLUTTER_ROOT"
+        export PATH="$FLUTTER_ROOT/bin:$PATH"
+        flutter --version
+
+    - name: Install Flutter
+      if: contains(inputs.tools, 'flutter') && inputs.platform == 'linux-arm64-musl'
+      shell: bash
+      run: |
+        apk add --no-cache git gcompat libstdc++ bash curl xz
+        FLUTTER_ROOT="${RUNNER_TEMP:-/tmp}/flutter"
+        rm -rf "$FLUTTER_ROOT"
+        [ -f /lib/ld-linux-aarch64.so.1 ] || \
+          ln -s /lib/ld-musl-aarch64.so.1 /lib/ld-linux-aarch64.so.1 2>/dev/null || true
+        git clone --depth=1 --branch stable https://github.com/flutter/flutter.git "$FLUTTER_ROOT"
+        echo "$FLUTTER_ROOT/bin" >> "$GITHUB_PATH"
+        git config --global --add safe.directory "$FLUTTER_ROOT"
+        echo "::notice::Flutter installed in lazy mode on linux-arm64-musl; runtime bootstrap was intentionally skipped."
+
+    - name: Install Crossler
+      if: contains(inputs.tools, 'crossler')
+      shell: bash
+      run: curl -fsSL https://raw.githubusercontent.com/powertech-center/crossler/master/scripts/install.sh | sh
+
+    - name: Install PowerShell
+      if: contains(inputs.tools, 'pwsh')
+      shell: bash
+      run: |
+        apk add --no-cache ca-certificates krb5-libs libgcc libintl libssl3 libstdc++ icu-libs
+        curl -fsSL "https://github.com/PowerShell/PowerShell/releases/download/v7.6.0/powershell-7.6.0-linux-musl-${{ steps.parse.outputs.arch }}.tar.gz" -o /tmp/pwsh.tar.gz
+        mkdir -p /opt/microsoft/powershell/7
+        tar xzf /tmp/pwsh.tar.gz -C /opt/microsoft/powershell/7
+        chmod +x /opt/microsoft/powershell/7/pwsh
+        ln -sf /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh
+        rm /tmp/pwsh.tar.gz
+
+    # Validate installed tools
+    - name: Validate installed tools
+      if: inputs.tools != ''
+      shell: bash
+      run: |
+        echo "::group::Installed tool versions"
+        for tool in ${{ inputs.tools }}; do
+          case "$tool" in
+            gcc)        gcc --version 2>/dev/null | head -1 || echo "gcc: not found" ;;
+            clang)      clang --version 2>/dev/null | head -1 || echo "clang: not found" ;;
+            cmake)      cmake --version 2>/dev/null | head -1 || echo "cmake: not found" ;;
+            meson)      meson --version 2>/dev/null || echo "meson: not found" ;;
+            python)     python3 --version 2>/dev/null || python --version 2>/dev/null || echo "python: not found" ;;
+            go)         go version 2>/dev/null || echo "go: not found" ;;
+            rust)       rustc --version 2>/dev/null || echo "rustc: not found" ;;
+            dotnet)     dotnet --version 2>/dev/null || echo "dotnet: not found" ;;
+            nodejs)     node --version 2>/dev/null || echo "node: not found" ;;
+            java)       java --version 2>/dev/null | head -1 || echo "java: not found" ;;
+            gradle)     gradle --version 2>/dev/null | head -3 | tail -1 || echo "gradle: not found" ;;
+            flutter)    flutter --version 2>/dev/null || echo "flutter: not found" ;;
+            crossler)   crossler --version 2>/dev/null || echo "crossler: not found" ;;
+            pwsh)       pwsh --version 2>/dev/null || echo "pwsh: not found" ;;
+            *)          echo "Unknown tool: $tool" ;;
+          esac
+        done
+        echo "::endgroup::"
+
+    # -- Download artifact ----------------------------------------------------
+    - name: Download artifact
+      if: inputs.artifact-name-prefix != ''
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        ARTIFACT_NAME="${{ inputs.artifact-name-prefix }}-${{ inputs.platform }}"
+        DEST="${{ inputs.artifact-path }}"
+        mkdir -p "$DEST"
+
+        RUN_ID="${GITHUB_RUN_ID}"
+        REPO="${GITHUB_REPOSITORY}"
+
+        # List artifacts for this run and find matching one
+        ARTIFACT_ID=$(curl -fsSL \
+          -H "Authorization: token ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${REPO}/actions/runs/${RUN_ID}/artifacts" \
+          | python3 -c "
+        import json, sys
+        data = json.load(sys.stdin)
+        for a in data.get('artifacts', []):
+            if a['name'] == '${ARTIFACT_NAME}':
+                print(a['id'])
+                break
+        ")
+
+        if [ -z "$ARTIFACT_ID" ]; then
+          echo "::error::Artifact '${ARTIFACT_NAME}' not found"
+          exit 1
+        fi
+
+        curl -fsSL \
+          -H "Authorization: token ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -o /tmp/artifact.zip \
+          "https://api.github.com/repos/${REPO}/actions/artifacts/${ARTIFACT_ID}/zip"
+
+        unzip -o /tmp/artifact.zip -d "$DEST"
+        rm /tmp/artifact.zip
+        echo "::notice::Downloaded artifact '${ARTIFACT_NAME}' to ${DEST}"
+
+    # -- Run command ----------------------------------------------------------
+    - name: Run
+      shell: ${{ inputs.shell }}
+      run: ${{ inputs.command }}

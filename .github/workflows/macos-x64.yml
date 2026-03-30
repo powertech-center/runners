@@ -44,7 +44,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
-      - uses: powertech-center/runners/run@main
+      - uses: powertech-center/runners/std@main
         with:
           platform: macos-x64
           command: ${{ inputs.command }}

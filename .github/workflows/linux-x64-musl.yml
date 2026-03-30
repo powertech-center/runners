@@ -45,11 +45,10 @@ jobs:
     container: alpine:latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
-      - uses: powertech-center/runners/run@main
+      - uses: powertech-center/runners/musl@main
         with:
           platform: linux-x64-musl
           command: ${{ inputs.command }}
-          shell: bash
           tools: ${{ inputs.tools }}
           checkout: ${{ inputs.checkout }}
           artifact-name-prefix: ${{ inputs.artifact-name-prefix }}
