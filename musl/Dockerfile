@@ -1,5 +1,8 @@
 FROM alpine:latest
 
+# ── Enable community repository ────────────────────────────────────────────
+RUN sed -i 's|^#\(.*community\)$|\1|' /etc/apk/repositories && apk update
+
 # ── Core utilities ──────────────────────────────────────────────────────────
 RUN apk add --no-cache \
     bash \
@@ -54,6 +57,7 @@ RUN apk add --no-cache \
     py3-pip \
     perl \
     php \
+    composer \
     ruby \
     nodejs \
     npm \
@@ -63,7 +67,7 @@ RUN apk add --no-cache \
     openjdk21-jdk
 
 # ── .NET SDK ───────────────────────────────────────────────────────────────
-RUN apk add --no-cache dotnet-sdk
+RUN apk add --no-cache dotnet9-sdk
 
 # ── PowerShell ─────────────────────────────────────────────────────────────
 RUN apk add --no-cache powershell

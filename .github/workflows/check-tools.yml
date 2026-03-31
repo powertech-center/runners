@@ -14,7 +14,7 @@ jobs:
           - ubuntu-24.04
           - ubuntu-24.04-arm
           - macos-26-intel
-          - macos-latest
+          - macos-26
           - windows-latest
           - windows-11-arm
     steps:
@@ -69,6 +69,7 @@ jobs:
           check ruby       ruby --version
           check perl       perl --version
           check php        php --version
+          check composer   composer --version
           check java       java --version
           check pwsh       pwsh --version
           echo "::endgroup::"

@@ -34,9 +34,35 @@ runs:
   steps:
     # -- Bootstrap ------------------------------------------------------------
     - name: Bootstrap
-      if: runner.os == 'Windows'
+      if: inputs.platform == 'linux-x64-gnu' || inputs.platform == 'linux-arm64-gnu'
+      shell: bash
+      run: npm install -g pnpm
+
+    - name: Bootstrap
+      if: inputs.platform == 'macos-x64'
+      shell: bash
+      run: |
+        brew install tree go pnpm
+
+    - name: Bootstrap
+      if: inputs.platform == 'macos-arm64'
+      shell: bash
+      run: |
+        brew install tree go php composer pnpm
+
+    - name: Bootstrap
+      if: inputs.platform == 'windows-x64'
       shell: pwsh
-      run: choco install wget zip -y --no-progress
+      run: |
+        choco install wget zip yq tree -y --no-progress
+        npm install -g pnpm
+
+    - name: Bootstrap
+      if: inputs.platform == 'windows-arm64'
+      shell: pwsh
+      run: |
+        choco install wget zip yq zstd tree -y --no-progress
+        npm install -g pnpm
 
     # -- Checkout -------------------------------------------------------------
     - name: Checkout repository
@@ -44,7 +70,7 @@ runs:
       uses: actions/checkout@v5
 
     # -- Setup runner environment ---------------------------------------------
-    - name: Setup runner
+    - name: Setup runner environment
       id: parse
       shell: bash
       run: |
@@ -72,48 +98,6 @@ runs:
         echo "libc=$LIBC" >> "$GITHUB_OUTPUT"
 
         echo "::notice::Platform: $PLATFORM (os=$OS, arch=$ARCH, libc=${LIBC:-none})"
-
-    - name: Detect emulation
-      if: runner.os != 'Windows'
-      shell: bash
-      run: |
-        EXPECTED_ARCH="${{ steps.parse.outputs.arch }}"
-        EMULATED="false"
-
-        MACHINE=$(uname -m)
-        case "$MACHINE" in
-          x86_64|amd64) ACTUAL_ARCH="x64" ;;
-          aarch64|arm64) ACTUAL_ARCH="arm64" ;;
-          *) ACTUAL_ARCH="$MACHINE" ;;
-        esac
-
-        if [ "$ACTUAL_ARCH" != "$EXPECTED_ARCH" ]; then
-          EMULATED="true"
-          echo "::warning::Running under emulation: expected $EXPECTED_ARCH, detected $ACTUAL_ARCH"
-        fi
-
-        echo "PT_EMULATED=$EMULATED" >> "$GITHUB_ENV"
-
-    - name: Detect emulation
-      if: runner.os == 'Windows'
-      shell: pwsh
-      run: |
-        $expectedArch = '${{ steps.parse.outputs.arch }}'
-        $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-
-        switch ($osArch) {
-          'X64'   { $actualArch = 'x64' }
-          'Arm64' { $actualArch = 'arm64' }
-          default { $actualArch = $osArch.ToLowerInvariant() }
-        }
-
-        $emulated = 'false'
-        if ($actualArch -ne $expectedArch) {
-          $emulated = 'true'
-          Write-Host "::warning::Running under emulation: expected $expectedArch, detected $actualArch"
-        }
-
-        "PT_EMULATED=$emulated" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
     # -- Download artifacts ---------------------------------------------------
     - name: Download artifacts

@@ -49,7 +49,7 @@ runs:
         git checkout FETCH_HEAD
 
     # -- Setup runner environment ---------------------------------------------
-    - name: Setup runner
+    - name: Setup runner environment
       id: parse
       shell: bash
       run: |
@@ -76,26 +76,6 @@ runs:
         echo "libc=$LIBC" >> "$GITHUB_OUTPUT"
 
         echo "::notice::Platform: $PLATFORM (os=$OS, arch=$ARCH, libc=$LIBC)"
-
-    - name: Detect emulation
-      shell: bash
-      run: |
-        EXPECTED_ARCH="${{ steps.parse.outputs.arch }}"
-        EMULATED="false"
-
-        MACHINE=$(uname -m)
-        case "$MACHINE" in
-          x86_64|amd64) ACTUAL_ARCH="x64" ;;
-          aarch64|arm64) ACTUAL_ARCH="arm64" ;;
-          *) ACTUAL_ARCH="$MACHINE" ;;
-        esac
-
-        if [ "$ACTUAL_ARCH" != "$EXPECTED_ARCH" ]; then
-          EMULATED="true"
-          echo "::warning::Running under emulation: expected $EXPECTED_ARCH, detected $ACTUAL_ARCH"
-        fi
-
-        echo "PT_EMULATED=$EMULATED" >> "$GITHUB_ENV"
 
     # -- Download artifacts ---------------------------------------------------
     - name: Download artifacts

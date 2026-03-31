@@ -21,7 +21,7 @@ jobs:
   linux-x64-musl:
     name: "Test (linux-x64-musl)"
     runs-on: ubuntu-24.04
-    container: ghcr.io/powertech-center/runners/musl:latest
+    container: ghcr.io/powertech-center/runners/musl-x64:latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -48,7 +48,7 @@ jobs:
   linux-arm64-musl:
     name: "Test (linux-arm64-musl)"
     runs-on: ubuntu-24.04-arm
-    container: ghcr.io/powertech-center/runners/musl:latest
+    container: ghcr.io/powertech-center/runners/musl-arm64:latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -75,7 +75,7 @@ jobs:
 
   macos-arm64:
     name: "Test (macos-arm64)"
-    runs-on: macos-latest
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5

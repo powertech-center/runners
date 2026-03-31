@@ -42,7 +42,7 @@ jobs:
   run:
     name: ${{ inputs.name }}
     runs-on: ubuntu-24.04
-    container: ghcr.io/powertech-center/runners/musl:latest
+    container: ghcr.io/powertech-center/runners/musl-x64:latest
     timeout-minutes: ${{ inputs.timeout }}
     steps:
       - uses: powertech-center/runners/musl@main

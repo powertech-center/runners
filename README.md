@@ -13,7 +13,7 @@ Reusable GitHub Actions jobs for cross-platform CI on **8 target platforms**. No
 | `windows-x64` | `windows-latest` | `pwsh` |
 | `windows-arm64` | `windows-11-arm` | `pwsh` |
 | `macos-x64` | `macos-26-intel` | `bash` |
-| `macos-arm64` | `macos-latest` | `bash` |
+| `macos-arm64` | `macos-26` | `bash` |
 
 All platforms run on native GitHub-hosted runners (including arm64). Musl platforms use an Alpine container on top of the Ubuntu runner.
 
