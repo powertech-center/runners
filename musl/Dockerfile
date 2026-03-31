@@ -20,8 +20,7 @@ RUN apk add --no-cache \
     zstd \
     zip \
     unzip \
-    p7zip \
-    aria2
+    p7zip
 
 # ── Text processing & search ───────────────────────────────────────────────
 RUN apk add --no-cache \
@@ -38,7 +37,8 @@ RUN apk add --no-cache \
     make \
     cmake \
     ninja-build \
-    pkgconf
+    pkgconf && \
+    ln -s /usr/lib/ninja-build/bin/ninja /usr/local/bin/ninja
 
 # ── C/C++ compilers & dev headers ──────────────────────────────────────────
 RUN apk add --no-cache \

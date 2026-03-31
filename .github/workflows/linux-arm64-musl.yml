@@ -13,6 +13,11 @@ on:
         required: false
         type: boolean
         default: true
+      shell:
+        description: "Shell to use (bash or pwsh)"
+        required: false
+        type: string
+        default: "bash"
       command:
         description: "Command to execute"
         required: true
@@ -48,8 +53,9 @@ jobs:
       - uses: powertech-center/runners/musl@main
         with:
           platform: linux-arm64-musl
-          command: ${{ inputs.command }}
           checkout: ${{ inputs.checkout }}
+          shell: ${{ inputs.shell }}
+          command: ${{ inputs.command }}
           artifacts-dir: ${{ inputs.artifacts-dir }}
           artifacts-download: ${{ inputs.artifacts-download }}
           artifacts-upload: ${{ inputs.artifacts-upload }}

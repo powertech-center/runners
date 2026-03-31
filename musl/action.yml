@@ -5,14 +5,14 @@ inputs:
   platform:
     description: "Target platform triplet (linux-x64-musl or linux-arm64-musl)"
     required: true
-  shell:
-    description: "Shell to use (bash or pwsh)"
-    required: false
-    default: "bash"
   checkout:
     description: "Checkout the calling repository"
     required: false
     default: "true"
+  shell:
+    description: "Shell to use (bash or pwsh)"
+    required: false
+    default: "bash"
   command:
     description: "Command to execute"
     required: true

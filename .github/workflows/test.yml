@@ -51,7 +51,17 @@ jobs:
     container: ghcr.io/powertech-center/runners/musl-arm64:latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout repository
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git config --global init.defaultBranch main
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          git init
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout FETCH_HEAD
       - uses: ./musl
         with:
           platform: linux-arm64-musl
