@@ -1,0 +1,79 @@
+name: "Check tools"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: "${{ matrix.runner }}"
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - macos-26-intel
+          - macos-latest
+          - windows-latest
+          - windows-11-arm
+    steps:
+      - name: Check tools
+        shell: bash
+        run: |
+          echo "::group::System info"
+          uname -a
+          echo "::endgroup::"
+
+          check() {
+            local name="$1"
+            shift
+            if command -v "$1" >/dev/null 2>&1; then
+              echo "OK   $name: $("$@" 2>&1 | head -1)"
+            else
+              echo "MISS $name"
+            fi
+          }
+
+          echo "::group::Bootstrap utilities"
+          check wget       wget --version
+          check make       make --version
+          check zip        zip -v
+          check unzip      unzip -v
+          check pkg-config pkg-config --version
+          check yq         yq --version
+          check zstd       zstd --version
+          check xz         xz --version
+          check git-lfs    git-lfs version
+          check aria2      aria2c --version
+          check tree       tree --version
+          check jq         jq --version
+          check p7zip      7z i
+          check curl       curl --version
+          echo "::endgroup::"
+
+          echo "::group::Compilers & languages"
+          check gcc        gcc --version
+          check g++        g++ --version
+          check clang      clang --version
+          check go         go version
+          check rustc      rustc --version
+          check cargo      cargo --version
+          check dotnet     dotnet --version
+          check python3    python3 --version
+          check pip        pip3 --version
+          check node       node --version
+          check npm        npm --version
+          check yarn       yarn --version
+          check pnpm       pnpm --version
+          check ruby       ruby --version
+          check perl       perl --version
+          check php        php --version
+          check java       java --version
+          check pwsh       pwsh --version
+          echo "::endgroup::"
+
+          echo "::group::Build systems"
+          check cmake      cmake --version
+          check ninja      ninja --version
+          echo "::endgroup::"

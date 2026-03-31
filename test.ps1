@@ -1,18 +1,7 @@
 $failed = 0
 
 Write-Host "=== Pre-installed utilities ==="
-foreach ($cmd in @("bash", "git", "curl", "wget", "zip", "unzip", "tar", "gzip", "make", "ninja", "pkg-config")) {
-    if (Get-Command $cmd -ErrorAction SilentlyContinue) {
-        Write-Host "OK: $cmd"
-    } else {
-        Write-Host "FAIL: $cmd not found"
-        $failed = 1
-    }
-}
-
-Write-Host ""
-Write-Host "=== Tools ==="
-foreach ($cmd in @("gcc", "clang", "cmake", "meson", "go", "rustc", "dotnet", "node", "java", "gradle", "flutter", "crossler", "pwsh")) {
+foreach ($cmd in @("bash", "git", "curl", "wget", "zip", "unzip", "tar", "gzip", "make", "ninja", "pkg-config", "cmake", "pwsh")) {
     if (Get-Command $cmd -ErrorAction SilentlyContinue) {
         Write-Host "OK: $cmd"
     } else {
@@ -28,6 +17,17 @@ if (Get-Command python3 -ErrorAction SilentlyContinue) {
 } else {
     Write-Host "FAIL: python not found"
     $failed = 1
+}
+
+Write-Host ""
+Write-Host "=== Tools ==="
+foreach ($cmd in @("gcc", "clang", "go", "rustc", "dotnet", "node", "java", "gradle", "flutter", "crossler")) {
+    if (Get-Command $cmd -ErrorAction SilentlyContinue) {
+        Write-Host "OK: $cmd"
+    } else {
+        Write-Host "FAIL: $cmd not found"
+        $failed = 1
+    }
 }
 
 if ($failed -ne 0) {

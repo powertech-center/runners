@@ -7,32 +7,32 @@ on:
         description: "Job display name"
         required: false
         type: string
-        default: "Run (windows-x64)"
-      command:
-        description: "Command to execute"
-        required: true
-        type: string
-      tools:
-        description: "Space-separated list of tools to install (cmake, python, etc.)"
-        required: false
-        type: string
-        default: ""
+        default: "windows-x64"
       checkout:
         description: "Checkout the calling repository"
         required: false
         type: boolean
         default: true
-      artifact-name-prefix:
-        description: "Base artifact name. Full name: {prefix}-windows-x64"
+      command:
+        description: "Command to execute"
+        required: true
+        type: string
+      artifacts-dir:
+        description: "Directory for artifacts"
+        required: false
+        type: string
+        default: "artifacts"
+      artifacts-download:
+        description: "Space-separated list of artifact names to download"
         required: false
         type: string
         default: ""
-      artifact-path:
-        description: "Path to download artifacts to"
+      artifacts-upload:
+        description: "Space-separated list of artifact names to upload"
         required: false
         type: string
-        default: "./artifacts"
-      timeout-minutes:
+        default: ""
+      timeout:
         description: "Job timeout in minutes"
         required: false
         type: number
@@ -42,14 +42,14 @@ jobs:
   run:
     name: ${{ inputs.name }}
     runs-on: windows-latest
-    timeout-minutes: ${{ inputs.timeout-minutes }}
+    timeout-minutes: ${{ inputs.timeout }}
     steps:
       - uses: powertech-center/runners/std@main
         with:
           platform: windows-x64
           command: ${{ inputs.command }}
           shell: pwsh
-          tools: ${{ inputs.tools }}
           checkout: ${{ inputs.checkout }}
-          artifact-name-prefix: ${{ inputs.artifact-name-prefix }}
-          artifact-path: ${{ inputs.artifact-path }}
+          artifacts-dir: ${{ inputs.artifacts-dir }}
+          artifacts-download: ${{ inputs.artifacts-download }}
+          artifacts-upload: ${{ inputs.artifacts-upload }}
