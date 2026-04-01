@@ -41,11 +41,40 @@ inputs:
 runs:
   using: "composite"
   steps:
-    # - name: Bootstrap
-    #   if: inputs.platform == 'macos-x64' || inputs.platform == 'macos-arm64'
-    #   shell: bash
-    #   run: |
-    #     brew install tree
+    - name: Bootstrap
+      if: inputs.platform == 'macos-x64' || inputs.platform == 'macos-arm64'
+      shell: sh
+      run: |
+        set -e
+
+        PLATFORM="${{ inputs.platform }}"
+        REPO="powertech-center/runners/${PLATFORM}"
+        BASE="https://ghcr.io/v2/${REPO}"
+        PREFIX="$(brew --prefix)"
+        WORK="${RUNNER_TEMP}/bootstrap"
+
+        mkdir -p "$WORK"
+
+        TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:${REPO}:pull" | jq -r .token)
+
+        DIGEST=$(curl -fsSL -H "Authorization: Bearer ${TOKEN}" -H "Accept: application/vnd.oci.image.manifest.v1+json" "${BASE}/manifests/latest" | jq -r '.layers[0].digest')
+
+        curl -fsSL -H "Authorization: Bearer ${TOKEN}" "${BASE}/blobs/${DIGEST}" -o "${WORK}/brew.tar.gz"
+        tar -xzf "${WORK}/brew.tar.gz" -C "${PREFIX}" 2>/dev/null || true
+
+        # Activate the latest pre-installed Go from hostedtoolcache
+        ARCH=$([ "$(uname -m)" = "arm64" ] && echo "arm64" || echo "x64")
+        TOOLCACHE="${AGENT_TOOLSDIRECTORY:-/Users/runner/hostedtoolcache}"
+        GO_DIR="$TOOLCACHE/go"
+        if [ -d "$GO_DIR" ]; then
+          GO_VERSION=$(ls -1 "$GO_DIR" | sort -V | tail -1)
+          if [ -n "$GO_VERSION" ] && [ -f "$GO_DIR/$GO_VERSION/${ARCH}.complete" ]; then
+            GOROOT="$GO_DIR/$GO_VERSION/$ARCH"
+            echo "GOROOT=$GOROOT" >> "$GITHUB_ENV"
+            echo "$GOROOT/bin" >> "$GITHUB_PATH"
+            echo "Go activated: $("$GOROOT/bin/go" version)"
+          fi
+        fi
 
     - name: Bootstrap
       if: inputs.platform == 'windows-x64' || inputs.platform == 'windows-arm64'
@@ -69,17 +98,6 @@ runs:
         curl -fsSL -H "Authorization: Bearer %TOKEN%" "%BASE%/blobs/%DIGEST%" -o "%WORK%\bin.tar.gz" || exit /b 1
         tar -xzf "%WORK%\bin.tar.gz" --strip-components=1 -C "%TARGET_DIR%" || exit /b 1
 
-
-    # - uses: actions/setup-go@v6
-    #   if: inputs.platform == 'macos-x64' || inputs.platform == 'macos-arm64'
-    #   with:
-    #     go-version: 'stable'
-    #     cache: false
-
-    # - uses: shivammathur/setup-php@v2
-    #   if: inputs.platform == 'macos-arm64'
-    #   with:
-    #     tools: composer
 
     # -- Checkout (sh) --------------------------------------------------------
     - name: Checkout repository

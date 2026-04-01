@@ -1,7 +1,10 @@
 name: "Publish Bootstrap OCI Bundles"
 
 on:
+  #push:
   workflow_dispatch:
+  schedule:
+    - cron: "0 19 * * 0" # weekly, Sunday 22:00 MSK (19:00 UTC)
 
 permissions:
   contents: read
@@ -255,3 +258,184 @@ jobs:
           }
 
           Write-Host "Published: $image"
+
+  publish-macos:
+    name: "Publish macOS (${{ matrix.platform }})"
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-x64
+            runner: macos-26-intel
+            tools: tree
+          - platform: macos-arm64
+            runner: macos-26
+            tools: tree php composer
+    steps:
+      - name: Detect missing tools
+        id: detect
+        shell: bash
+        run: |
+          MISSING=""
+          for tool in ${{ matrix.tools }}; do
+            if command -v "$tool" &>/dev/null; then
+              echo "$tool: present at $(which "$tool")"
+            else
+              echo "$tool: MISSING"
+              MISSING="$MISSING $tool"
+            fi
+          done
+          MISSING="${MISSING# }"
+          echo "missing=$MISSING" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$MISSING" ]; then
+            echo "All tools already present, nothing to bundle"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tools to install: $MISSING"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Snapshot before
+        if: steps.detect.outputs.skip == 'false'
+        shell: bash
+        run: |
+          brew list --formula | sort > /tmp/brew_before.txt
+          echo "Packages before: $(wc -l < /tmp/brew_before.txt)"
+
+      - name: Install missing tools via brew
+        if: steps.detect.outputs.skip == 'false'
+        shell: bash
+        run: |
+          for tool in ${{ steps.detect.outputs.missing }}; do
+            echo "::group::brew install $tool"
+            time brew install "$tool"
+            echo "Installed to: $(which "$tool")"
+            echo "::endgroup::"
+          done
+
+      - name: Snapshot after and compute diff
+        if: steps.detect.outputs.skip == 'false'
+        shell: bash
+        run: |
+          brew list --formula | sort > /tmp/brew_after.txt
+          comm -13 /tmp/brew_before.txt /tmp/brew_after.txt > /tmp/brew_new.txt
+
+          NEW_COUNT=$(wc -l < /tmp/brew_new.txt)
+          echo "New packages installed: $NEW_COUNT"
+          echo "--- New packages ---"
+          cat /tmp/brew_new.txt
+
+          if [ "$NEW_COUNT" -eq 0 ]; then
+            echo "::error::No new packages detected after brew install"
+            exit 1
+          fi
+
+      - name: Build bundle
+        if: steps.detect.outputs.skip == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PREFIX="$(brew --prefix)"
+          CELLAR="$(brew --cellar)"
+          BUNDLE="${RUNNER_TEMP}/bootstrap-bundle"
+
+          rm -rf "$BUNDLE"
+          mkdir -p "$BUNDLE/Cellar" "$BUNDLE/opt"
+
+          # Copy Cellar dirs for new packages
+          while IFS= read -r pkg; do
+            PKG_CELLAR="${CELLAR}/${pkg}"
+            if [ -d "$PKG_CELLAR" ]; then
+              SIZE=$(du -sh "$PKG_CELLAR" | cut -f1)
+              echo "Packing: $pkg ($SIZE)"
+              cp -a "$PKG_CELLAR" "$BUNDLE/Cellar/"
+            fi
+          done < /tmp/brew_new.txt
+
+          # Copy symlinks from prefix subdirs that point into new packages
+          for subdir in bin sbin lib include share etc; do
+            SRC="${PREFIX}/${subdir}"
+            [ -d "$SRC" ] || continue
+            while IFS= read -r pkg; do
+              LINKS=$(find "$SRC" -maxdepth 1 -lname "*Cellar/${pkg}/*" 2>/dev/null || true)
+              if [ -n "$LINKS" ]; then
+                mkdir -p "$BUNDLE/${subdir}"
+                echo "$LINKS" | while IFS= read -r link; do
+                  cp -a "$link" "$BUNDLE/${subdir}/"
+                done
+              fi
+            done < /tmp/brew_new.txt
+          done
+
+          # Copy opt/ symlinks (brew --prefix <pkg> = PREFIX/opt/<pkg>)
+          while IFS= read -r pkg; do
+            OPT_LINK="${PREFIX}/opt/${pkg}"
+            if [ -L "$OPT_LINK" ] || [ -d "$OPT_LINK" ]; then
+              cp -a "$OPT_LINK" "$BUNDLE/opt/"
+            fi
+          done < /tmp/brew_new.txt
+
+          echo ""
+          echo "=== Bundle summary ==="
+          echo "Cellar packages: $(ls "$BUNDLE/Cellar/" | wc -l)"
+          echo "bin symlinks: $(ls "$BUNDLE/bin/" 2>/dev/null | wc -l)"
+          echo "Uncompressed size: $(du -sh "$BUNDLE" | cut -f1)"
+
+      - name: Create archive
+        if: steps.detect.outputs.skip == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUNDLE="${RUNNER_TEMP}/bootstrap-bundle"
+          ARCHIVE="${RUNNER_TEMP}/bootstrap.tar.gz"
+
+          time tar -cf - -C "$BUNDLE" . | gzip -9 > "$ARCHIVE"
+
+          echo "Archive size: $(du -sh "$ARCHIVE" | cut -f1)"
+          echo "Uncompressed: $(du -sh "$BUNDLE" | cut -f1)"
+
+      - name: Install ORAS
+        if: steps.detect.outputs.skip == 'false'
+        shell: bash
+        run: |
+          ORAS_VERSION="1.2.2"
+          ORAS_ARCH="$(uname -m)"
+          if [ "$ORAS_ARCH" = "x86_64" ]; then ORAS_ARCH="amd64"; fi
+          if [ "$ORAS_ARCH" = "arm64" ]; then ORAS_ARCH="arm64"; fi
+
+          URL="https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_darwin_${ORAS_ARCH}.tar.gz"
+          ORAS_DIR="${RUNNER_TEMP}/oras"
+
+          mkdir -p "$ORAS_DIR"
+          echo "Downloading ORAS ${ORAS_VERSION} (${ORAS_ARCH})..."
+          curl -fsSL "$URL" | tar -xz -C "$ORAS_DIR"
+          echo "${ORAS_DIR}" >> "$GITHUB_PATH"
+          "${ORAS_DIR}/oras" version
+
+      - name: Publish OCI artifact
+        if: steps.detect.outputs.skip == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PLATFORM="${{ matrix.platform }}"
+          IMAGE="ghcr.io/powertech-center/runners/${PLATFORM}:latest"
+          ARCHIVE="${RUNNER_TEMP}/bootstrap.tar.gz"
+          WORK="${RUNNER_TEMP}/oci-publish"
+
+          rm -rf "$WORK"
+          mkdir -p "$WORK"
+          cp "$ARCHIVE" "$WORK/brew.tar.gz"
+
+          oras login ghcr.io --username "${{ github.actor }}" --password "${{ secrets.GITHUB_TOKEN }}"
+
+          cd "$WORK"
+          oras push "$IMAGE" \
+            --artifact-type "application/vnd.powertech.bootstrap.v1" \
+            "brew.tar.gz:application/gzip"
+
+          echo "Published: $IMAGE"
