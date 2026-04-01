@@ -15,7 +15,8 @@ inputs:
     default: "bash"
   command:
     description: "Command to execute"
-    required: true
+    required: false
+    default: ""
   artifacts-dir:
     description: "Directory for artifacts"
     required: false
@@ -49,33 +50,33 @@ runs:
         git checkout FETCH_HEAD
 
     # -- Setup runner environment ---------------------------------------------
-    - name: Setup runner environment
-      id: parse
-      shell: bash
-      run: |
-        PLATFORM="${{ inputs.platform }}"
-
-        case "$PLATFORM" in
-          linux-x64-musl|linux-arm64-musl)
-            ;;
-          *)
-            echo "::error::Unknown musl platform: $PLATFORM"
-            exit 1
-            ;;
-        esac
-
-        IFS='-' read -r OS ARCH LIBC <<< "$PLATFORM"
-
-        echo "PT_OS=$OS" >> "$GITHUB_ENV"
-        echo "PT_ARCH=$ARCH" >> "$GITHUB_ENV"
-        echo "PT_LIBC=$LIBC" >> "$GITHUB_ENV"
-        echo "PT_PLATFORM=$PLATFORM" >> "$GITHUB_ENV"
-
-        echo "os=$OS" >> "$GITHUB_OUTPUT"
-        echo "arch=$ARCH" >> "$GITHUB_OUTPUT"
-        echo "libc=$LIBC" >> "$GITHUB_OUTPUT"
-
-        echo "::notice::Platform: $PLATFORM (os=$OS, arch=$ARCH, libc=$LIBC)"
+    # - name: Setup runner environment
+    #   id: parse
+    #   shell: bash
+    #   run: |
+    #     PLATFORM="${{ inputs.platform }}"
+    #
+    #     case "$PLATFORM" in
+    #       linux-x64-musl|linux-arm64-musl)
+    #         ;;
+    #       *)
+    #         echo "::error::Unknown musl platform: $PLATFORM"
+    #         exit 1
+    #         ;;
+    #     esac
+    #
+    #     IFS='-' read -r OS ARCH LIBC <<< "$PLATFORM"
+    #
+    #     echo "PT_OS=$OS" >> "$GITHUB_ENV"
+    #     echo "PT_ARCH=$ARCH" >> "$GITHUB_ENV"
+    #     echo "PT_LIBC=$LIBC" >> "$GITHUB_ENV"
+    #     echo "PT_PLATFORM=$PLATFORM" >> "$GITHUB_ENV"
+    #
+    #     echo "os=$OS" >> "$GITHUB_OUTPUT"
+    #     echo "arch=$ARCH" >> "$GITHUB_OUTPUT"
+    #     echo "libc=$LIBC" >> "$GITHUB_OUTPUT"
+    #
+    #     echo "::notice::Platform: $PLATFORM (os=$OS, arch=$ARCH, libc=$LIBC)"
 
     # -- Download artifacts ---------------------------------------------------
     - name: Download artifacts
@@ -124,7 +125,10 @@ runs:
 
     # -- Run command ----------------------------------------------------------
     - name: Run
+      if: inputs.command != ''
       shell: ${{ inputs.shell }}
+      env:
+        RUNNER_PLATFORM: ${{ inputs.platform }}
       run: ${{ inputs.command }}
 
     # -- Upload artifacts -----------------------------------------------------

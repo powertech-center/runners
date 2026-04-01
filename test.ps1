@@ -1,5 +1,16 @@
 $failed = 0
 
+Write-Host "=== Runner environment ==="
+foreach ($name in @("RUNNER_PLATFORM", "RUNNER_OS", "RUNNER_ARCH", "RUNNER_NAME")) {
+    $value = [Environment]::GetEnvironmentVariable($name)
+    if ([string]::IsNullOrEmpty($value)) {
+        Write-Host "${name}: <not set>"
+    } else {
+        Write-Host "${name}: $value"
+    }
+}
+
+Write-Host ""
 Write-Host "=== Core utilities ==="
 foreach ($cmd in @("bash", "git", "git-lfs", "curl", "wget", "tar", "xz", "zstd", "zip", "unzip", "7z")) {
     if (Get-Command $cmd -ErrorAction SilentlyContinue) {

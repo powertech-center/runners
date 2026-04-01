@@ -13,6 +13,16 @@ on:
         required: false
         type: boolean
         default: true
+      checkout-submodules:
+        description: "Checkout submodules recursively"
+        required: false
+        type: boolean
+        default: false
+      checkout-lfs:
+        description: "Fetch LFS objects"
+        required: false
+        type: boolean
+        default: false
       shell:
         description: "Shell to use (bash or pwsh)"
         required: false
@@ -50,10 +60,12 @@ jobs:
     container: ghcr.io/powertech-center/runners/musl-x64:latest
     timeout-minutes: ${{ inputs.timeout }}
     steps:
-      - uses: powertech-center/runners/musl@main
+      - uses: powertech-center/runners/run@main
         with:
           platform: linux-x64-musl
           checkout: ${{ inputs.checkout }}
+          checkout-submodules: ${{ inputs.checkout-submodules }}
+          checkout-lfs: ${{ inputs.checkout-lfs }}
           shell: ${{ inputs.shell }}
           command: ${{ inputs.command }}
           artifacts-dir: ${{ inputs.artifacts-dir }}

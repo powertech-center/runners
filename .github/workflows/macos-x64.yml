@@ -13,6 +13,16 @@ on:
         required: false
         type: boolean
         default: true
+      checkout-submodules:
+        description: "Checkout submodules recursively"
+        required: false
+        type: boolean
+        default: false
+      checkout-lfs:
+        description: "Fetch LFS objects"
+        required: false
+        type: boolean
+        default: false
       shell:
         description: "Shell to use (bash or pwsh)"
         required: false
@@ -49,10 +59,12 @@ jobs:
     runs-on: macos-26-intel
     timeout-minutes: ${{ inputs.timeout }}
     steps:
-      - uses: powertech-center/runners/std@main
+      - uses: powertech-center/runners/run@main
         with:
           platform: macos-x64
           checkout: ${{ inputs.checkout }}
+          checkout-submodules: ${{ inputs.checkout-submodules }}
+          checkout-lfs: ${{ inputs.checkout-lfs }}
           shell: ${{ inputs.shell }}
           command: ${{ inputs.command }}
           artifacts-dir: ${{ inputs.artifacts-dir }}

@@ -1,0 +1,198 @@
+name: "Run"
+description: "Sets up the runner environment, downloads artifacts, and executes a command"
+
+inputs:
+  platform:
+    description: "Target platform triplet (e.g., linux-x64-gnu)"
+    required: true
+  checkout:
+    description: "Checkout the calling repository"
+    required: false
+    default: "true"
+  checkout-submodules:
+    description: "Checkout submodules recursively"
+    required: false
+    default: "false"
+  checkout-lfs:
+    description: "Fetch LFS objects"
+    required: false
+    default: "false"
+  shell:
+    description: "Shell to use (bash or pwsh)"
+    required: false
+    default: "bash"
+  command:
+    description: "Command to execute"
+    required: false
+    default: ""
+  artifacts-dir:
+    description: "Directory for artifacts"
+    required: false
+    default: "artifacts"
+  artifacts-download:
+    description: "Space-separated list of artifact names to download"
+    required: false
+    default: ""
+  artifacts-upload:
+    description: "Space-separated list of artifact names to upload"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    # -- Bootstrap ------------------------------------------------------------
+    # - name: Bootstrap
+    #   if: inputs.platform == 'linux-x64-gnu' || inputs.platform == 'linux-arm64-gnu'
+    #   shell: bash
+    #   run: npm install -g pnpm
+
+    # - name: Bootstrap
+    #   if: inputs.platform == 'macos-x64' || inputs.platform == 'macos-arm64'
+    #   shell: bash
+    #   run: |
+    #     brew install tree pnpm
+
+    # - name: Bootstrap
+    #   if: inputs.platform == 'windows-x64' || inputs.platform == 'windows-arm64'
+    #   shell: pwsh
+    #   run: |
+    #     $platform = "${{ inputs.platform }}"
+    #     $isArm64 = $platform -eq "windows-arm64"
+    #     $toolsDir = "$env:RUNNER_TOOL_CACHE\custom-tools\bin"
+    #     New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+    #
+    #     # Helper: install MSYS2 package
+    #     function Install-Msys2Pkg($url, $binPath) {
+    #       $tmp = "$env:RUNNER_TEMP\msys2_$(Get-Random)"
+    #       New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    #       $file = Split-Path $url -Leaf
+    #       curl.exe -fsSL -o "$tmp\$file" $url
+    #       7z x "$tmp\$file" -o"$tmp\s1" -y | Out-Null
+    #       $tar = Get-ChildItem "$tmp\s1\*.tar" | Select-Object -First 1
+    #       7z x $tar.FullName -o"$tmp\s2" -y | Out-Null
+    #       Copy-Item "$tmp\s2\$binPath\*" -Destination $toolsDir -Force
+    #       Remove-Item $tmp -Recurse -Force
+    #     }
+    #
+    #     # wget
+    #     $wgetArch = if ($isArm64) { "a64" } else { "64" }
+    #     curl.exe -fsSL -o "$toolsDir\wget.exe" "https://eternallybored.org/misc/wget/1.21.4/$wgetArch/wget.exe"
+    #
+    #     # yq
+    #     $yqArch = if ($isArm64) { "arm64" } else { "amd64" }
+    #     curl.exe -fsSL -o "$toolsDir\yq.exe" "https://github.com/mikefarah/yq/releases/latest/download/yq_windows_$yqArch.exe"
+    #
+    #     # zip & unzip (from MSYS2)
+    #     Install-Msys2Pkg "https://mirror.msys2.org/msys/x86_64/zip-3.0-4-x86_64.pkg.tar.zst" "usr\bin"
+    #     Install-Msys2Pkg "https://mirror.msys2.org/msys/x86_64/unzip-6.0-3-x86_64.pkg.tar.zst" "usr\bin"
+    #
+    #     # zstd (ARM64 only — already present on x64 runners)
+    #     if ($isArm64) {
+    #       Install-Msys2Pkg "https://repo.msys2.org/mingw/clangarm64/mingw-w64-clang-aarch64-zstd-1.5.7-1-any.pkg.tar.zst" "clangarm64\bin"
+    #     }
+    #
+    #     # Add to PATH for subsequent steps
+    #     echo "$toolsDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+    #
+    #     # pnpm
+    #     npm install -g pnpm
+
+    # - uses: actions/setup-go@v6
+    #   if: inputs.platform == 'macos-x64' || inputs.platform == 'macos-arm64'
+    #   with:
+    #     go-version: 'stable'
+    #     cache: false
+
+    # - uses: shivammathur/setup-php@v2
+    #   if: inputs.platform == 'macos-arm64'
+    #   with:
+    #     tools: composer
+
+    # -- Checkout (sh) --------------------------------------------------------
+    - name: Checkout repository
+      if: inputs.checkout == 'true' && !startsWith(inputs.platform, 'windows')
+      shell: sh
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        git config --global gc.auto 0
+        git config --global advice.detachedHead false
+        git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+        git init -q
+        git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+        if [ "${{ inputs.checkout-lfs }}" = "true" ]; then
+          git lfs install --local
+        fi
+
+        git fetch --depth=1 origin "${GITHUB_SHA}"
+        git checkout FETCH_HEAD
+
+        if [ "${{ inputs.checkout-submodules }}" = "true" ]; then
+          git submodule update --init --recursive --depth=1
+        fi
+
+    # -- Checkout (cmd) -------------------------------------------------------
+    - name: Checkout repository
+      if: inputs.checkout == 'true' && startsWith(inputs.platform, 'windows')
+      shell: cmd
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        git config --global gc.auto 0
+        git config --global advice.detachedHead false
+        git config --global --add safe.directory "%GITHUB_WORKSPACE%"
+        git init -q
+        git remote add origin "https://x-access-token:%GITHUB_TOKEN%@github.com/%GITHUB_REPOSITORY%.git"
+
+        if "${{ inputs.checkout-lfs }}"=="true" (
+          git lfs install --local
+        )
+
+        git fetch --depth=1 origin "%GITHUB_SHA%"
+        git checkout FETCH_HEAD
+
+        if "${{ inputs.checkout-submodules }}"=="true" (
+          git submodule update --init --recursive --depth=1
+        )
+
+    # -- Download artifacts ---------------------------------------------------
+    - name: Download artifacts
+      if: inputs.artifacts-download != ''
+      shell: bash
+      run: |
+        ARTIFACTS_DIR="${{ inputs.artifacts-dir }}"
+        for NAME in ${{ inputs.artifacts-download }}; do
+          echo "::group::Download artifact '$NAME'"
+          mkdir -p "$ARTIFACTS_DIR/$NAME"
+          echo "::notice::Downloaded artifact '$NAME' to $ARTIFACTS_DIR/$NAME"
+          echo "::endgroup::"
+        done
+      # TODO: implement actual download via REST API
+
+    # -- Run command ----------------------------------------------------------
+    - name: Run
+      if: inputs.command != ''
+      shell: ${{ inputs.shell }}
+      env:
+        RUNNER_PLATFORM: ${{ inputs.platform }}
+      run: ${{ inputs.command }}
+
+    # -- Upload artifacts -----------------------------------------------------
+    - name: Upload artifacts
+      if: inputs.artifacts-upload != ''
+      shell: bash
+      run: |
+        ARTIFACTS_DIR="${{ inputs.artifacts-dir }}"
+        for NAME in ${{ inputs.artifacts-upload }}; do
+          echo "::group::Upload artifact '$NAME'"
+          if [ -e "$ARTIFACTS_DIR/$NAME" ]; then
+            echo "::notice::Uploaded artifact '$NAME' from $ARTIFACTS_DIR/$NAME"
+          else
+            echo "::error::Artifact path '$ARTIFACTS_DIR/$NAME' not found"
+            exit 1
+          fi
+          echo "::endgroup::"
+        done
+      # TODO: implement actual upload via REST API
