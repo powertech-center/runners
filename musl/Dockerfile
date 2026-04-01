@@ -72,7 +72,4 @@ RUN apk add --no-cache dotnet9-sdk
 # ── PowerShell ─────────────────────────────────────────────────────────────
 RUN apk add --no-cache powershell
 
-# ── Node.js package managers ───────────────────────────────────────────────
-RUN npm install -g yarn pnpm
-
 CMD ["/bin/sh"]

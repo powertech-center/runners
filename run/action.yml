@@ -41,62 +41,34 @@ inputs:
 runs:
   using: "composite"
   steps:
-    # -- Bootstrap ------------------------------------------------------------
-    # - name: Bootstrap
-    #   if: inputs.platform == 'linux-x64-gnu' || inputs.platform == 'linux-arm64-gnu'
-    #   shell: bash
-    #   run: npm install -g pnpm
-
     # - name: Bootstrap
     #   if: inputs.platform == 'macos-x64' || inputs.platform == 'macos-arm64'
     #   shell: bash
     #   run: |
-    #     brew install tree pnpm
+    #     brew install tree
 
-    # - name: Bootstrap
-    #   if: inputs.platform == 'windows-x64' || inputs.platform == 'windows-arm64'
-    #   shell: pwsh
-    #   run: |
-    #     $platform = "${{ inputs.platform }}"
-    #     $isArm64 = $platform -eq "windows-arm64"
-    #     $toolsDir = "$env:RUNNER_TOOL_CACHE\custom-tools\bin"
-    #     New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
-    #
-    #     # Helper: install MSYS2 package
-    #     function Install-Msys2Pkg($url, $binPath) {
-    #       $tmp = "$env:RUNNER_TEMP\msys2_$(Get-Random)"
-    #       New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-    #       $file = Split-Path $url -Leaf
-    #       curl.exe -fsSL -o "$tmp\$file" $url
-    #       7z x "$tmp\$file" -o"$tmp\s1" -y | Out-Null
-    #       $tar = Get-ChildItem "$tmp\s1\*.tar" | Select-Object -First 1
-    #       7z x $tar.FullName -o"$tmp\s2" -y | Out-Null
-    #       Copy-Item "$tmp\s2\$binPath\*" -Destination $toolsDir -Force
-    #       Remove-Item $tmp -Recurse -Force
-    #     }
-    #
-    #     # wget
-    #     $wgetArch = if ($isArm64) { "a64" } else { "64" }
-    #     curl.exe -fsSL -o "$toolsDir\wget.exe" "https://eternallybored.org/misc/wget/1.21.4/$wgetArch/wget.exe"
-    #
-    #     # yq
-    #     $yqArch = if ($isArm64) { "arm64" } else { "amd64" }
-    #     curl.exe -fsSL -o "$toolsDir\yq.exe" "https://github.com/mikefarah/yq/releases/latest/download/yq_windows_$yqArch.exe"
-    #
-    #     # zip & unzip (from MSYS2)
-    #     Install-Msys2Pkg "https://mirror.msys2.org/msys/x86_64/zip-3.0-4-x86_64.pkg.tar.zst" "usr\bin"
-    #     Install-Msys2Pkg "https://mirror.msys2.org/msys/x86_64/unzip-6.0-3-x86_64.pkg.tar.zst" "usr\bin"
-    #
-    #     # zstd (ARM64 only — already present on x64 runners)
-    #     if ($isArm64) {
-    #       Install-Msys2Pkg "https://repo.msys2.org/mingw/clangarm64/mingw-w64-clang-aarch64-zstd-1.5.7-1-any.pkg.tar.zst" "clangarm64\bin"
-    #     }
-    #
-    #     # Add to PATH for subsequent steps
-    #     echo "$toolsDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-    #
-    #     # pnpm
-    #     npm install -g pnpm
+    - name: Bootstrap
+      if: inputs.platform == 'windows-x64' || inputs.platform == 'windows-arm64'
+      shell: cmd
+      run: |
+        @echo off
+        setlocal EnableExtensions EnableDelayedExpansion
+
+        set "PLATFORM=${{ inputs.platform }}"
+        set "REPO=powertech-center/runners/%PLATFORM%"
+        set "BASE=https://ghcr.io/v2/%REPO%"
+        set "TARGET_DIR=C:\ProgramData\Chocolatey\bin"
+        set "WORK=%RUNNER_TEMP%\bootstrap"
+
+        mkdir "%WORK%" 2>nul
+
+        for /f "usebackq delims=" %%T in (`curl -fsSL "https://ghcr.io/token?scope=repository:%REPO%:pull" ^| jq -r .token`) do set "TOKEN=%%T"
+
+        for /f "usebackq delims=" %%D in (`curl -fsSL -H "Authorization: Bearer %TOKEN%" -H "Accept: application/vnd.oci.image.manifest.v1+json" "%BASE%/manifests/latest" ^| jq -r ".layers[0].digest"`) do set "DIGEST=%%D"
+
+        curl -fsSL -H "Authorization: Bearer %TOKEN%" "%BASE%/blobs/%DIGEST%" -o "%WORK%\bin.tar.gz" || exit /b 1
+        tar -xzf "%WORK%\bin.tar.gz" --strip-components=1 -C "%TARGET_DIR%" || exit /b 1
+
 
     # - uses: actions/setup-go@v6
     #   if: inputs.platform == 'macos-x64' || inputs.platform == 'macos-arm64'

@@ -1,0 +1,257 @@
+name: "Publish Bootstrap OCI Bundles"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: "Publish (${{ matrix.platform }})"
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            platform: windows-x64
+            runner: windows-latest
+            zstd-cmake-arch: x64
+          - arch: arm64
+            platform: windows-arm64
+            runner: windows-11-arm
+            zstd-cmake-arch: ARM64
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install ORAS
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $orasArch = "amd64"
+          $orasVersion = "1.2.2"
+          $url = "https://github.com/oras-project/oras/releases/download/v${orasVersion}/oras_${orasVersion}_windows_${orasArch}.zip"
+          $zipPath = Join-Path $env:RUNNER_TEMP "oras.zip"
+          $orasDir = Join-Path $env:RUNNER_TEMP "oras"
+
+          Write-Host "Downloading ORAS ${orasVersion} (${orasArch}) ..."
+          curl.exe -fL --retry 5 --retry-delay 2 --retry-connrefused -o $zipPath $url
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to download ORAS."
+          }
+
+          New-Item -ItemType Directory -Force -Path $orasDir | Out-Null
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $orasDir -Force
+
+          $orasExe = Join-Path $orasDir "oras.exe"
+          if (-not (Test-Path -LiteralPath $orasExe)) {
+            throw "oras.exe not found after extraction."
+          }
+
+          Write-Host "ORAS installed: $orasExe"
+          & $orasExe version
+          echo $orasDir >> $env:GITHUB_PATH
+
+      - name: Prepare bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $arch = "${{ matrix.arch }}"
+          $platform = "${{ matrix.platform }}"
+          $cmakeArch = "${{ matrix.zstd-cmake-arch }}"
+
+          $bundleRoot = Join-Path $env:RUNNER_TEMP "bootstrap-oci-$platform"
+          $binDir = Join-Path $bundleRoot "bin"
+          $metaDir = Join-Path $bundleRoot "meta"
+
+          Remove-Item -LiteralPath $bundleRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $binDir, $metaDir | Out-Null
+
+          function Find-Application([string]$Name) {
+            Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue
+          }
+
+          function Invoke-Download([string]$Url, [string]$Destination) {
+            Write-Host "Download: $Url"
+            curl.exe -fL --retry 5 --retry-delay 2 --retry-connrefused -o $Destination $Url
+            if ($LASTEXITCODE -ne 0) {
+              throw "Download failed: $Url"
+            }
+          }
+
+          function Add-Wget {
+            $wgetArch = if ($arch -eq "arm64") { "a64" } else { "64" }
+            $url = "https://eternallybored.org/misc/wget/1.21.4/$wgetArch/wget.exe"
+            Invoke-Download $url (Join-Path $binDir "wget.exe")
+            return @{
+              mode = "download"
+              source = $url
+            }
+          }
+
+          function Add-Yq {
+            $yqArch = if ($arch -eq "arm64") { "arm64" } else { "amd64" }
+            $url = "https://github.com/mikefarah/yq/releases/latest/download/yq_windows_$yqArch.exe"
+            Invoke-Download $url (Join-Path $binDir "yq.exe")
+            return @{
+              mode = "download"
+              source = $url
+            }
+          }
+
+          function Add-Zstd {
+            $workRoot = Join-Path $env:RUNNER_TEMP "build-zstd-$platform"
+            $buildDir = Join-Path $workRoot "build"
+            $archivePath = Join-Path $workRoot "zstd.zip"
+
+            Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
+
+            Invoke-Download "https://github.com/facebook/zstd/archive/refs/tags/v1.5.7.zip" $archivePath
+            Expand-Archive -LiteralPath $archivePath -DestinationPath $workRoot -Force
+
+            $srcDir = Get-ChildItem -LiteralPath $workRoot -Directory |
+              Where-Object { $_.Name -like "zstd-*" } |
+              Select-Object -First 1 -ExpandProperty FullName
+            if (-not $srcDir) {
+              throw "Unable to locate extracted zstd sources."
+            }
+
+            cmake -S (Join-Path $srcDir "build\cmake") -B $buildDir -G "Visual Studio 17 2022" -A $cmakeArch `
+              -Wno-dev `
+              -DCMAKE_BUILD_TYPE=Release `
+              -DZSTD_BUILD_PROGRAMS=ON `
+              -DZSTD_BUILD_SHARED=OFF
+            if ($LASTEXITCODE -ne 0) {
+              throw "zstd cmake configure failed."
+            }
+
+            cmake --build $buildDir --config Release --target zstd
+            if ($LASTEXITCODE -ne 0) {
+              throw "zstd build failed."
+            }
+
+            $zstdExe = Get-ChildItem -LiteralPath $buildDir -Recurse -Filter "zstd.exe" | Select-Object -First 1
+            if (-not $zstdExe) {
+              throw "Unable to find zstd.exe after build."
+            }
+
+            Copy-Item -LiteralPath $zstdExe.FullName -Destination (Join-Path $binDir "zstd.exe") -Force
+            return @{
+              mode = "source-build"
+              source = "https://github.com/facebook/zstd/archive/refs/tags/v1.5.7.zip"
+            }
+          }
+
+          function Add-ZipBinary {
+            $workRoot = Join-Path $env:RUNNER_TEMP "zip-x64-$platform"
+            $archivePath = Join-Path $workRoot "zip-x64.pkg.tar.zst"
+            $stage1 = Join-Path $workRoot "stage1"
+            $stage2 = Join-Path $workRoot "stage2"
+            $url = "https://mirror.msys2.org/msys/x86_64/zip-3.0-4-x86_64.pkg.tar.zst"
+
+            Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force -Path $workRoot, $stage1, $stage2 | Out-Null
+
+            Invoke-Download $url $archivePath
+
+            7z x $archivePath "-o$stage1" -y | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to unpack zip x64 package."
+            }
+
+            $tarPath = Get-ChildItem -LiteralPath $stage1 -Filter "*.tar" | Select-Object -First 1 -ExpandProperty FullName
+            if (-not $tarPath) {
+              throw "Failed to locate inner tar for zip x64 package."
+            }
+
+            7z x $tarPath "-o$stage2" -y | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to unpack zip x64 payload."
+            }
+
+            $zipExe = Join-Path $stage2 "usr\bin\zip.exe"
+            if (-not (Test-Path -LiteralPath $zipExe)) {
+              throw "zip.exe was not found in x64 package."
+            }
+
+            Copy-Item -LiteralPath $zipExe -Destination (Join-Path $binDir "zip.exe") -Force
+
+            return @{
+              mode = "download-x64-binary"
+              source = $url
+              note = "Windows ARM64 uses the same x64 zip.exe and relies on Windows x64 emulation."
+            }
+          }
+
+          $toolRecords = @()
+          foreach ($tool in @("wget", "zstd", "zip", "yq")) {
+            $existing = Find-Application $tool
+            if ($existing) {
+              $toolRecords += [ordered]@{
+                name = $tool
+                status = "present-on-runner"
+                action = "skipped"
+                detectedPath = $existing.Source
+              }
+              continue
+            }
+
+            $result = switch ($tool) {
+              "wget" { Add-Wget }
+              "zstd" { Add-Zstd }
+              "zip" { Add-ZipBinary }
+              "yq" { Add-Yq }
+              default { throw "Unsupported tool: $tool" }
+            }
+
+            $toolRecords += [ordered]@{
+              name = $tool
+              status = "missing-on-runner"
+              action = "added-to-bundle"
+              install = $result
+            }
+          }
+
+          $manifest = [ordered]@{
+            platform = $platform
+            arch = $arch
+            generatedAtUtc = [DateTime]::UtcNow.ToString("o")
+            destinationDir = "C:\ProgramData\Chocolatey\bin"
+            tools = $toolRecords
+          }
+
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $metaDir "manifest.json") -Encoding utf8
+
+      - name: Publish OCI artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $platform = "${{ matrix.platform }}"
+          $image = "ghcr.io/powertech-center/runners/${platform}:latest"
+          $bundleRoot = Join-Path $env:RUNNER_TEMP "bootstrap-oci-$platform"
+
+          oras login ghcr.io --username "${{ github.actor }}" --password "${{ secrets.GITHUB_TOKEN }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "oras login failed."
+          }
+
+          Push-Location $bundleRoot
+          try {
+            oras push $image `
+              --artifact-type "application/vnd.powertech.bootstrap.v1" `
+              "bin/:application/vnd.powertech.bootstrap.bin" `
+              "meta/:application/vnd.powertech.bootstrap.meta"
+            if ($LASTEXITCODE -ne 0) {
+              throw "oras push failed."
+            }
+          } finally {
+            Pop-Location
+          }
+
+          Write-Host "Published: $image"

@@ -67,7 +67,7 @@ foreach ($cmd in @("python3", "python", "perl", "php", "ruby", "node", "npm", "g
 
 Write-Host ""
 Write-Host "=== Node.js package managers ==="
-foreach ($cmd in @("yarn", "pnpm")) {
+foreach ($cmd in @("yarn")) {
     if (Get-Command $cmd -ErrorAction SilentlyContinue) {
         Write-Host "OK: $cmd"
     } else {

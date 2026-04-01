@@ -65,7 +65,6 @@ jobs:
           check node       node --version
           check npm        npm --version
           check yarn       yarn --version
-          check pnpm       pnpm --version
           check ruby       ruby --version
           check perl       perl --version
           check php        php --version
