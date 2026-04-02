@@ -18,7 +18,7 @@ inputs:
     required: false
     default: "false"
   shell:
-    description: "Shell to use (bash or pwsh)"
+    description: "Shell to execute the command in (bash, sh, pwsh, cmd)"
     required: false
     default: "bash"
   command:

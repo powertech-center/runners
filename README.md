@@ -1,95 +1,39 @@
 # PowerTech Runners
 
-Reusable GitHub Actions jobs for cross-platform CI on **8 target platforms**. No need to configure runners, install dependencies, or write platform-specific scripts — just specify your command and go.
+Reusable GitHub Actions jobs covering **8 target platforms** with fast prebuilt environments — consistent toolset, minimal configuration.
 
-## Supported Platforms
+## Usage
 
-| Platform | Runner | Shell |
-|---|---|---|
-| `linux-x64-gnu` | `ubuntu-24.04` | `bash` |
-| `linux-x64-musl` | `ubuntu-24.04` + `alpine:latest` | `bash` |
-| `linux-arm64-gnu` | `ubuntu-24.04-arm` | `bash` |
-| `linux-arm64-musl` | `ubuntu-24.04-arm` + `alpine:latest` | `bash` |
-| `windows-x64` | `windows-latest` | `pwsh` |
-| `windows-arm64` | `windows-11-arm` | `pwsh` |
-| `macos-x64` | `macos-26-intel` | `bash` |
-| `macos-arm64` | `macos-26` | `bash` |
-
-All platforms run on native GitHub-hosted runners (including arm64). Musl platforms use an Alpine container on top of the Ubuntu runner.
-
-## Quick Start
-
-### Single platform
+Reference one of the 8 target jobs in your workflow: `linux-x64-gnu`, `linux-x64-musl`, `linux-arm64-gnu`, `linux-arm64-musl`, `windows-x64`, `windows-arm64`, `macos-x64`, `macos-arm64`.
 
 ```yaml
 jobs:
-  test:
-    uses: powertech-center/runners/.github/workflows/linux-x64-gnu.yml@main
-    with:
-      command: |
-        cmake -B build
-        cmake --build build
-        ctest --test-dir build
-      tools: "gcc"
-```
-
-### Multiple platforms
-
-```yaml
-jobs:
-  linux:
-    uses: powertech-center/runners/.github/workflows/linux-x64-gnu.yml@main
-    with:
-      command: "./scripts/test.sh"
-      tools: "gcc"
-
-  alpine:
-    uses: powertech-center/runners/.github/workflows/linux-x64-musl.yml@main
-    with:
-      command: "./scripts/test.sh"
-      tools: "gcc"
-
-  windows:
-    uses: powertech-center/runners/.github/workflows/windows-x64.yml@main
-    with:
-      command: "./scripts/test.ps1"
-
-  macos:
-    uses: powertech-center/runners/.github/workflows/macos-arm64.yml@main
-    with:
-      command: "./scripts/test.sh"
-```
-
-### With artifacts
-
-```yaml
-jobs:
+  # Linux GNU — build and upload artifact
   build:
     uses: powertech-center/runners/.github/workflows/linux-x64-gnu.yml@main
     with:
       command: |
-        ./build.sh
-        cp -r dist/* artifacts/my-build/
-      artifacts-upload: "my-build"
-      tools: "gcc"
+        cmake -B build --toolchain cmake/windows-x64.cmake
+        cmake --build build
+      artifacts-upload: "my-app"
 
+  # Windows — pwsh shell (cmd and bash are also available), download artifact
   test:
     needs: build
-    uses: powertech-center/runners/.github/workflows/linux-x64-gnu.yml@main
+    uses: powertech-center/runners/.github/workflows/windows-x64.yml@main
     with:
-      command: "./artifacts/my-build/run-tests.sh"
-      artifacts-download: "my-build"
-```
+      shell: pwsh
+      command: "./artifacts/my-app/my-app.exe --run-tests"
+      artifacts-download: "my-app"
 
-You can download multiple artifacts from previous jobs:
-
-```yaml
-  integration:
-    needs: [build-lib, build-app]
-    uses: powertech-center/runners/.github/workflows/linux-x64-gnu.yml@main
+  # macOS — downloads artifact, uploads multiple release packages
+  package:
+    needs: test
+    uses: powertech-center/runners/.github/workflows/macos-arm64.yml@main
     with:
-      command: "./run-integration.sh"
-      artifacts-download: "lib-output app-output"
+      command: "./scripts/sign-and-package.sh"
+      artifacts-download: "my-app"
+      artifacts-upload: "my-app.msi my-app.zip my-app.tar.gz"
 ```
 
 ## Parameters
@@ -98,73 +42,55 @@ You can download multiple artifacts from previous jobs:
 |---|---|---|---|
 | `name` | No | `{platform}` | Job display name |
 | `checkout` | No | `true` | Checkout the calling repository |
-| `tools` | No | `""` | Space-separated list of tools to install |
+| `checkout-submodules` | No | `false` | Checkout submodules recursively |
+| `checkout-lfs` | No | `false` | Fetch LFS objects |
+| `shell` | No | `bash` | Shell to execute the command in (`bash`, `sh`, `pwsh`, `cmd`) |
 | `command` | Yes | — | Command to execute |
-| `artifacts-dir` | No | `artifacts` | Directory for artifacts |
-| `artifacts-download` | No | `""` | Space-separated list of artifact names to download before `command` |
-| `artifacts-upload` | No | `""` | Space-separated list of artifact names to upload after `command` |
+| `artifacts-dir` | No | `artifacts` | Root directory for artifacts |
+| `artifacts-download` | No | `""` | Space-separated artifact names to download into `{artifacts-dir}/{name}` before `command` |
+| `artifacts-upload` | No | `""` | Space-separated artifact names to upload from `{artifacts-dir}/{name}` after `command` |
 | `timeout` | No | `30` | Job timeout in minutes |
 
-## Pre-installed Utilities
+## What's Included
 
-Every platform comes with a set of common utilities out of the box — no need to list them in `tools`:
+All 8 platforms share a consistent, pre-configured toolset. Anything missing on a specific runner is installed automatically during bootstrap. See [runner-images](https://github.com/actions/runner-images) for the full list.
 
-`bash`, `git`, `curl`, `wget`, `zip`, `unzip`, `tar`, `gzip`, `make`, `ninja`, `pkg-config`, `cmake`, `pwsh`, `python`
+**Core utilities**
+`bash`, `pwsh`, `git`, `git-lfs`, `curl`, `wget`, `aria2`, `tar`, `xz`, `zstd`, `zip`, `unzip`, `7z`, `rsync`, `gpg`, `gh`, `aws`, `az`
 
-These are either pre-installed on the runner or automatically added during the bootstrap step.
+**Text processing**
+`jq`, `yq`, `grep`, `sed`, `awk`, `find`, `tree`
 
-## Tools
+**Build systems**
+`cmake`, `ninja`, `make`, `pkg-config`, `gradle`, `maven`, `ant`, `bazel`
 
-Use the `tools` parameter to install additional compilers, languages, and runtimes:
+**Compilers & languages**
+`gcc`, `clang`, `go`, `rustc/cargo`, `python`, `node`, `dotnet`, `java`, `kotlin`, `php`, `ruby`, `perl`
 
-```yaml
-tools: "gcc go"
-```
-
-### Compilers
-
-| Tool | Description |
-|---|---|
-| `gcc` | GNU Compiler Collection (+ build-essential/build-base) |
-| `clang` | LLVM/Clang compiler |
-
-### Languages & Runtimes
-
-| Tool | Description |
-|---|---|
-| `go` | Go |
-| `rust` | Rust (rustc + cargo) |
-| `dotnet` | .NET SDK |
-| `nodejs` | Node.js + npm |
-| `java` | Java (Temurin JDK 21) |
-| `gradle` | Gradle build tool |
-| `flutter` | Flutter SDK |
-
-### Other
-
-| Tool | Description |
-|---|---|
-| `crossler` | [Crossler](https://github.com/powertech-center/crossler) cross-compilation tool |
+**Package managers**
+`pip`, `npm`, `yarn`, `composer`, `gem`, `nuget`, `vcpkg`, `helm`, `pipx`
 
 ## Environment Variables
 
-The following environment variables are available in your command:
+All standard GitHub Actions environment variables are available — `GITHUB_*` for repository and workflow context, `RUNNER_*` for runner details. If you're not familiar with them, see the [GitHub docs](https://docs.github.com/en/actions/reference/workflows-and-actions/variables).
+
+In addition, one variable is set by the runner itself:
 
 | Variable | Example | Description |
 |---|---|---|
-| `PT_PLATFORM` | `linux-x64-gnu` | Full platform triplet |
-| `PT_OS` | `linux` | Operating system |
-| `PT_ARCH` | `x64` | CPU architecture |
-| `PT_LIBC` | `gnu` | C library (Linux only) |
-| `PT_EMULATED` | `false` | Running under emulation |
+| `RUNNER_PLATFORM` | `linux-x64-gnu` | The target platform selected for this job — useful for writing cross-platform scripts that need to branch on OS, architecture, or libc. |
 
-## Artifacts
+## Bootstrap
 
-Artifacts are stored as files or directories inside `artifacts-dir` (default: `artifacts`). Each name in `artifacts-download` / `artifacts-upload` corresponds to a subdirectory or file inside that directory.
+GitHub-hosted runners already come with an impressive set of tools — kudos to the GitHub Actions team for that. However, each runner differs slightly in what's available out of the box. To give users a truly consistent experience, we took on the task of maintaining a unified toolset across all platforms, and called this process *bootstrap*.
 
-- **Download** happens before `command` — each name is downloaded into `{artifacts-dir}/{name}/`
-- **Upload** happens after `command` — each name is uploaded from `{artifacts-dir}/{name}`
-- The mechanism works identically on all 8 platforms (including musl) via REST API
+Instead of installing missing tools at runtime via package managers like `brew`, `choco`, or `apt` — which can take tens of seconds or even minutes — we use a different approach. A dedicated workflow (`bootstrap-oci.yml`) runs on a schedule to stay up to date: it spins up each runner, brings it to the desired state, packages the diff as a patch, and publishes it via GitHub Packages. At job startup, bootstrap downloads and applies this patch in just a couple of seconds.
+
+On Linux and Windows, we install LLVM runtime libraries (`libc++`, `compiler-rt`) including headers and static variants, which are absent by default. On macOS, `go` is present on the runner but not activated — we add it to PATH; we also install `tree`, and on arm64 — `php` and `composer`. On Windows, we additionally provide `wget`, `zip`, and `yq`; on arm64 we also build and bundle `zstd`.
+
+Linux musl targets deserve a special mention. GitHub doesn't provide Alpine runners, and the obvious solution — a Docker image — is too slow (pulling approaches a minute). Chroot cuts off the host toolset; wrappers bridging Alpine into the host didn't work well either. We ended up with a hybrid *pseudo-Alpine*: the host runner's glibc-based utilities stay intact, unnecessary bits are stripped, and a full Alpine shell is layered on top — `apk`, `/etc/alpine-release`, BusyBox-backed `sed` and `grep`, and so on. Tools like `apt-get` and `lsb-release` are renamed with an underscore prefix rather than removed, so they're recoverable if needed.
+
+Compilers are handled separately: the GCC toolchain is replaced with a musl-targeting build, while Clang gets smart wrappers that behave as musl-targeted but are themselves glibc-linked — no full reinstall required.
 
 ## License
 
