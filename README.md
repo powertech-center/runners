@@ -64,7 +64,7 @@ All 8 platforms share a consistent, pre-configured toolset. Anything missing on 
 **Build systems**
 `cmake`, `ninja`, `make`, `pkg-config`, `gradle`, `maven`, `ant`, `bazel`
 
-**Compilers & languages**
+**Compilers & runtimes**
 `gcc`, `clang`, `go`, `rustc/cargo`, `python`, `node`, `dotnet`, `java`, `kotlin`, `php`, `ruby`, `perl`
 
 **Package managers**
