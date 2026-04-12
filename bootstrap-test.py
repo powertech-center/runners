@@ -306,17 +306,32 @@ def group_tools() -> None:
     check_tool("ar",      ["--version"])
     check_tool("nm",      ["--version"])
     check_tool("objdump", ["--version"])
-    check_tool("readelf", ["--version"])
+    if is_macos():
+        skip("readelf", "ELF-only tool, not available on macOS")
+    else:
+        check_tool("readelf", ["--version"])
 
     suite("Clang/LLVM toolchain")
     check_tool("clang",    ["--version"])
     check_tool("clang++",  ["--version"])
-    check_tool("lld",      ["--version"])
-    check_tool("ld.lld",   ["--version"])
-    check_tool("llvm-ar",  ["--version"])
+    if is_macos():
+        # macOS uses Apple ld/ar; lld and llvm-ar are not pre-installed
+        skip("lld/ld.lld/llvm-ar", "not shipped on macOS runners")
+    else:
+        check_tool("lld",      ["--version"])
+        check_tool("ld.lld",   ["--version"])
+        check_tool("llvm-ar",  ["--version"])
 
     suite("Go")
-    check_tool("go",    ["version"])
+    if is_macos():
+        # Go is activated via hostedtoolcache in run/action.yml bootstrap,
+        # not pre-installed on the macOS runner image itself.
+        if has("go"):
+            check_tool("go", ["version"])
+        else:
+            skip("go", "not pre-installed on macOS (activated via bootstrap)")
+    else:
+        check_tool("go",    ["version"])
 
     suite("Rust")
     check_tool("rustc",         ["--version"])

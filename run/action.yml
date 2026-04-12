@@ -65,7 +65,11 @@ runs:
         # into later steps as confusing "command not found" / linker
         # errors. This mirrors the gating Emulate step in
         # bootstrap-build-publish.yml so that both paths fail fast.
-        sudo tar -xzf "${WORK}/patch.tar.gz" -C /
+        if [ "$(uname -s)" = "Darwin" ]; then
+          sudo tar -xmozf "${WORK}/patch.tar.gz" -C /
+        else
+          sudo tar --no-overwrite-dir -xzf "${WORK}/patch.tar.gz" -C /
+        fi
 
         # Activate the latest pre-installed Go from hostedtoolcache
         ARCH=$([ "$(uname -m)" = "arm64" ] && echo "arm64" || echo "x64")

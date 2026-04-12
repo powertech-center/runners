@@ -36,16 +36,16 @@ jobs:
           #   runner: windows-latest
           # - platform: windows-arm64
           #   runner: windows-11-arm
-          # - platform: macos-x64
-          #   runner: macos-26-intel
-          # - platform: macos-arm64
-          #   runner: macos-26
+          - platform: macos-x64
+            runner: macos-26-intel
+          - platform: macos-arm64
+            runner: macos-26
 
-          # -- Iteration 3: Linux gnu (audit only, empty ROOT) ---------------
-          - platform: linux-x64-gnu
-            runner: ubuntu-24.04
-          - platform: linux-arm64-gnu
-            runner: ubuntu-24.04-arm
+          # -- Iteration 3: Linux gnu ----------------------------------------
+          # - platform: linux-x64-gnu
+          #   runner: ubuntu-24.04
+          # - platform: linux-arm64-gnu
+          #   runner: ubuntu-24.04-arm
 
           # -- Iteration 5: Linux musl (Alpine overlay) ----------------------
           # Temporarily disabled while we stabilize linux-gnu. Re-enable
@@ -93,7 +93,14 @@ jobs:
           # a confusing linker error. `tar -xz -C /` overwrites existing
           # files under paths we own (we ship absolute paths from /).
           echo "=== extracting to / ==="
-          sudo tar -xzf "$ARCHIVE" -C /
+          if [ "$(uname -s)" = "Darwin" ]; then
+            # macOS bsdtar: -m skips restoring mtime, -o skips restoring
+            # ownership -- both fail on the read-only /usr/ volume (Intel).
+            sudo tar -xmozf "$ARCHIVE" -C /
+          else
+            # GNU tar: --no-overwrite-dir avoids touching existing dir metadata.
+            sudo tar --no-overwrite-dir -xzf "$ARCHIVE" -C /
+          fi
           echo "=== libc++ files actually present on host after extract ==="
           ls -la /usr/lib/x86_64-linux-gnu/libc++* 2>/dev/null || true
           ls -la /usr/lib/aarch64-linux-gnu/libc++* 2>/dev/null || true
