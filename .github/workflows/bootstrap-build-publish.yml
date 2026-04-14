@@ -32,20 +32,20 @@ jobs:
       matrix:
         include:
           # -- Iteration 1+2: Windows + macOS --------------------------------
-          # - platform: windows-x64
-          #   runner: windows-latest
-          # - platform: windows-arm64
-          #   runner: windows-11-arm
+          - platform: windows-x64
+            runner: windows-latest
+          - platform: windows-arm64
+            runner: windows-11-arm
           - platform: macos-x64
             runner: macos-26-intel
           - platform: macos-arm64
             runner: macos-26
 
           # -- Iteration 3: Linux gnu ----------------------------------------
-          # - platform: linux-x64-gnu
-          #   runner: ubuntu-24.04
-          # - platform: linux-arm64-gnu
-          #   runner: ubuntu-24.04-arm
+          - platform: linux-x64-gnu
+            runner: ubuntu-24.04
+          - platform: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
 
           # -- Iteration 5: Linux musl (Alpine overlay) ----------------------
           # Temporarily disabled while we stabilize linux-gnu. Re-enable
@@ -106,6 +106,16 @@ jobs:
           ls -la /usr/lib/aarch64-linux-gnu/libc++* 2>/dev/null || true
           ls -la /usr/lib/llvm-18/lib/libc++* 2>/dev/null || true
 
+      - name: Prepare (Windows arm64 — rename stock LLVM)
+        if: matrix.platform == 'windows-arm64'
+        shell: cmd
+        run: |
+          @echo off
+          if exist "C:\Program Files\LLVM" (
+            ren "C:\Program Files\LLVM" _LLVM
+            echo Renamed LLVM to _LLVM
+          )
+
       - name: Emulate bootstrap (Windows)
         if: startsWith(matrix.platform, 'windows')
         shell: cmd
@@ -114,7 +124,7 @@ jobs:
           setlocal EnableExtensions
           set "ARCHIVE=%RUNNER_TEMP%\patch.tar.gz"
           dir "%ARCHIVE%"
-          tar -xzf "%ARCHIVE%" -C "C:\" || exit /b 1
+          tar -xzf "%ARCHIVE%" -C C:\ || exit /b 1
 
       # -- Gating: run bootstrap-test.py against the in-place layout we
       # just produced. RUNNER_PLATFORM is exported so the test script

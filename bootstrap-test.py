@@ -62,6 +62,10 @@ def skip(name: str, reason: str = "") -> None:
 
 def run(cmd: list, **kwargs) -> subprocess.CompletedProcess:
     try:
+        # On Windows, .cmd/.bat wrappers (npm, gem, az …) require shell=True
+        # to be invoked by subprocess without OSError.
+        if sys.platform == "win32" and "shell" not in kwargs:
+            kwargs["shell"] = True
         return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
     except FileNotFoundError:
         return subprocess.CompletedProcess(cmd, 127, "", f"{cmd[0]}: command not found")
@@ -192,6 +196,11 @@ def is_windows() -> bool:
 def is_macos() -> bool:
     return _detect_os() == "macos"
 
+# Executable extension for compiled binaries on the current platform.
+# On Windows, CMD requires .exe to run a binary from an arbitrary path;
+# compilers honour the extension when given via -o explicitly.
+EXE = ".exe" if is_windows() else ""
+
 
 # -- Compile helper -----------------------------------------------------------
 _C_SRC = '#include <stdio.h>\nint main(void){printf("hello-c\\n");return 0;}\n'
@@ -205,7 +214,7 @@ _GO_CGO_SRC = ('package main\n/*\n#include <stdio.h>\nvoid hello_c(void)'
 def _compile_and_run(compiler: str, src_name: str, src_content: str,
                      extra_flags: list = None, tmpdir: str = "") -> tuple[bool, str]:
     src = Path(tmpdir) / src_name
-    out = Path(tmpdir) / (src_name + ".out")
+    out = Path(tmpdir) / (Path(src_name).stem + EXE)
     src.write_text(src_content)
     cmd = [compiler] + (extra_flags or []) + ["-o", str(out), str(src)]
     r = run(cmd)
@@ -276,9 +285,9 @@ def group_tools() -> None:
     check_tool("xz",      ["--version"])
     check_tool("zstd",    ["--version"])
     check_tool("zip",     ["-v"])
+    check_tool("rsync",   ["--version"])
     check_tool("unzip",   ["-v"])
     check_tool("7z",      ["i"])
-    check_tool("rsync",   ["--version"])
     check_tool("gpg",     ["--version"])
     check_tool("gh",      ["--version"])
     check_tool("aws",     ["--version"])
@@ -306,8 +315,8 @@ def group_tools() -> None:
     check_tool("ar",      ["--version"])
     check_tool("nm",      ["--version"])
     check_tool("objdump", ["--version"])
-    if is_macos():
-        skip("readelf", "ELF-only tool, not available on macOS")
+    if is_macos() or is_windows():
+        skip("readelf", "ELF-only tool, not available on macOS/Windows")
     else:
         check_tool("readelf", ["--version"])
 
@@ -557,7 +566,7 @@ def group_runtimes() -> None:
             pass_(f"go version -- {r.stdout.strip()}")
 
             src = Path(tmp) / "main.go"
-            out = Path(tmp) / "hello_go"
+            out = Path(tmp) / f"hello_go{EXE}"
             src.write_text(_GO_SRC)
             r = run(["go", "build", "-o", str(out), str(src)])
             if r.returncode == 0 and out.exists():
@@ -566,7 +575,7 @@ def group_runtimes() -> None:
                 if r2.returncode == 0 and "hello-go" in r2.stdout:
                     pass_("go binary runs correctly")
                 else:
-                    fail("go binary runs", f"exit={r2.returncode}")
+                    fail("go binary runs", f"exit={r2.returncode} err={r2.stderr[:200]}")
                 if is_linux():
                     interp = elf_interp(str(out))
                     if is_musl():
@@ -605,7 +614,7 @@ def group_runtimes() -> None:
             pass_(f"rustc -- {r.stdout.strip()}")
 
             rs_src = Path(tmp) / "hello.rs"
-            rs_out = Path(tmp) / "hello_rust"
+            rs_out = Path(tmp) / f"hello_rust{EXE}"
             rs_src.write_text(_RS_SRC)
             r = run(["rustc", "-o", str(rs_out), str(rs_src)])
             if r.returncode == 0 and rs_out.exists():
@@ -614,7 +623,7 @@ def group_runtimes() -> None:
                 if r2.returncode == 0 and "hello-rust" in r2.stdout:
                     pass_("rustc binary runs correctly")
                 else:
-                    fail("rustc binary runs", f"exit={r2.returncode}")
+                    fail("rustc binary runs", f"exit={r2.returncode} err={r2.stderr[:200]}")
                 if is_linux():
                     interp = elf_interp(str(rs_out))
                     if is_musl():

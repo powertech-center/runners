@@ -52,13 +52,10 @@ runs:
         REPO="powertech-center/runners/${PLATFORM}"
         BASE="https://ghcr.io/v2/${REPO}"
         WORK="${RUNNER_TEMP}/bootstrap"
-
         mkdir -p "$WORK"
 
         TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:${REPO}:pull" | jq -r .token)
-
         DIGEST=$(curl -fsSL -H "Authorization: Bearer ${TOKEN}" -H "Accept: application/vnd.oci.image.manifest.v1+json" "${BASE}/manifests/latest" | jq -r '.layers[0].digest')
-
         curl -fsSL -H "Authorization: Bearer ${TOKEN}" "${BASE}/blobs/${DIGEST}" -o "${WORK}/patch.tar.gz"
         # Extract bundle at filesystem root. Do NOT swallow stderr -- a
         # failure here must stop the bootstrap loudly instead of leaking
@@ -71,17 +68,21 @@ runs:
           sudo tar --no-overwrite-dir -xzf "${WORK}/patch.tar.gz" -C /
         fi
 
-        # Activate the latest pre-installed Go from hostedtoolcache
-        ARCH=$([ "$(uname -m)" = "arm64" ] && echo "arm64" || echo "x64")
-        TOOLCACHE="${AGENT_TOOLSDIRECTORY:-/Users/runner/hostedtoolcache}"
-        GO_DIR="$TOOLCACHE/go"
-        if [ -d "$GO_DIR" ]; then
-          GO_VERSION=$(ls -1 "$GO_DIR" | sort -V | tail -1)
-          if [ -n "$GO_VERSION" ] && [ -f "$GO_DIR/$GO_VERSION/${ARCH}.complete" ]; then
-            GOROOT="$GO_DIR/$GO_VERSION/$ARCH"
-            echo "GOROOT=$GOROOT" >> "$GITHUB_ENV"
-            echo "$GOROOT/bin" >> "$GITHUB_PATH"
-            echo "Go activated: $("$GOROOT/bin/go" version)"
+        # macOS: Go is pre-installed in hostedtoolcache but not on PATH.
+        # Activate the latest version. Linux and Windows already have Go
+        # in PATH out of the box, so no activation needed there.
+        if [ "$(uname -s)" = "Darwin" ]; then
+          ARCH=$([ "$(uname -m)" = "arm64" ] && echo "arm64" || echo "x64")
+          TOOLCACHE="${AGENT_TOOLSDIRECTORY:-/Users/runner/hostedtoolcache}"
+          GO_DIR="$TOOLCACHE/go"
+          if [ -d "$GO_DIR" ]; then
+            GO_VERSION=$(ls -1 "$GO_DIR" | sort -V | tail -1)
+            if [ -n "$GO_VERSION" ] && [ -f "$GO_DIR/$GO_VERSION/${ARCH}.complete" ]; then
+              GOROOT="$GO_DIR/$GO_VERSION/$ARCH"
+              echo "GOROOT=$GOROOT" >> "$GITHUB_ENV"
+              echo "$GOROOT/bin" >> "$GITHUB_PATH"
+              echo "Go activated: $("$GOROOT/bin/go" version)"
+            fi
           fi
         fi
 
@@ -97,18 +98,22 @@ runs:
         set "REPO=powertech-center/runners/%PLATFORM%"
         set "BASE=https://ghcr.io/v2/%REPO%"
         set "WORK=%RUNNER_TEMP%\bootstrap"
-
         mkdir "%WORK%" 2>nul
 
         for /f "usebackq delims=" %%T in (`curl -fsSL "https://ghcr.io/token?scope=repository:%REPO%:pull" ^| jq -r .token`) do set "TOKEN=%%T"
-
         for /f "usebackq delims=" %%D in (`curl -fsSL -H "Authorization: Bearer %TOKEN%" -H "Accept: application/vnd.oci.image.manifest.v1+json" "%BASE%/manifests/latest" ^| jq -r ".layers[0].digest"`) do set "DIGEST=%%D"
-
         curl -fsSL -H "Authorization: Bearer %TOKEN%" "%BASE%/blobs/%DIGEST%" -o "%WORK%\patch.tar.gz" || exit /b 1
+        rem windows-arm64 bundle replaces stock MSVC-targeting LLVM with
+        rem llvm-mingw. Rename the original out of the way so our files
+        rem land cleanly at C:\Program Files\LLVM.
+        if "%PLATFORM%"=="windows-arm64" (
+          if exist "C:\Program Files\LLVM" (
+            ren "C:\Program Files\LLVM" _LLVM
+          )
+        )
         rem Extract bundle at C:\. Mirrors the gating Emulate step in
         rem bootstrap-build-publish.yml -- fail fast on tar errors.
-        tar -xzf "%WORK%\patch.tar.gz" -C "C:\" || exit /b 1
-
+        tar -xzf "%WORK%\patch.tar.gz" -C C:\ || exit /b 1
 
     # -- Checkout (sh) --------------------------------------------------------
     - name: Checkout repository

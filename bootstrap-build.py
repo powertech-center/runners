@@ -63,6 +63,18 @@ REPO_ROOT = Path(__file__).resolve().parent
 # This is the standard location used by all Windows GitHub-hosted runners.
 WIN_CHOCO_BIN_REL = Path("ProgramData") / "Chocolatey" / "bin"
 
+# llvm-mingw: self-contained MinGW-targeting LLVM toolchain from
+# https://github.com/mstorsjo/llvm-mingw — used on windows-arm64 where
+# the stock LLVM targets aarch64-pc-windows-msvc (not MinGW) and there
+# is no native GCC. Includes clang, lld, gcc/g++ shims, libc++, and
+# the MinGW-w64 sysroot.
+LLVM_MINGW_RELEASE = "20260407"
+LLVM_MINGW_LLVM_VERSION = "22.1.3"
+
+# Where LLVM lives on Windows runners.
+WIN_LLVM_DIR = Path("Program Files") / "LLVM"
+WIN_LLVM_BACKUP = Path("Program Files") / "_LLVM"
+
 
 # ---------------------------------------------------------------------------
 # Logging helpers
@@ -548,6 +560,7 @@ def _libcxx_windows(arch: str, root: Path) -> None:
         f"llvm-project-{version}.src/libunwind",
         f"llvm-project-{version}.src/cmake",
         f"llvm-project-{version}.src/llvm/cmake",
+        f"llvm-project-{version}.src/llvm/utils",
         f"llvm-project-{version}.src/third-party",
     ]
     import tarfile as _tarfile
@@ -564,6 +577,15 @@ def _libcxx_windows(arch: str, root: Path) -> None:
 
     install_prefix_abs = root / "Program Files" / "LLVM"
 
+    # Target triple: GNU-like mode, not MSVC/clang-cl.  clang on Windows
+    # defaults to x86_64-pc-windows-msvc which pulls in vcruntime headers
+    # and conflicts with libc++ type_info.  We need the MinGW/GNU ABI so
+    # that `clang++ -stdlib=libc++` works without clang-cl.
+    if arch == "x64":
+        target_triple = "x86_64-pc-windows-gnu"
+    else:
+        target_triple = "aarch64-pc-windows-gnu"
+
     build = work / "build"
     group("CMake configure libc++")
     run([
@@ -572,6 +594,13 @@ def _libcxx_windows(arch: str, root: Path) -> None:
         "-B", str(build),
         f"-DCMAKE_C_COMPILER={clang}",
         f"-DCMAKE_CXX_COMPILER={clangpp}",
+        f"-DCMAKE_C_COMPILER_TARGET={target_triple}",
+        f"-DCMAKE_CXX_COMPILER_TARGET={target_triple}",
+        f"-DLLVM_DEFAULT_TARGET_TRIPLE={target_triple}",
+        # Avoid link-testing the compiler — windows-arm64 runners lack a
+        # MinGW sysroot so the linker cannot find -lkernel32 etc.  We only
+        # build static libraries, so a link test is unnecessary.
+        "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
         "-DCMAKE_BUILD_TYPE=Release",
         "-DLLVM_ENABLE_RUNTIMES=libcxx;libcxxabi;libunwind",
         "-DLIBCXX_ENABLE_SHARED=OFF",
@@ -613,9 +642,10 @@ def install_libcxx(platform: str, root: Path) -> None:
         info("libc++: linux musl uses apk install (handled by overlay)")
     elif platform == "linux-arm64-musl":
         info("libc++: linux musl uses apk install (handled by overlay)")
-    elif platform.startswith("windows"):
-        arch = "arm64" if platform.endswith("arm64") else "x64"
-        _libcxx_windows(arch, root)
+    elif platform == "windows-arm64":
+        info("libc++: skipped on windows-arm64 (included in llvm-mingw)")
+    elif platform == "windows-x64":
+        _libcxx_windows("x64", root)
     else:
         fail(f"install_libcxx: unsupported platform {platform}")
 
@@ -631,18 +661,17 @@ def install_libcxx(platform: str, root: Path) -> None:
 # can rely on them. Each tool is detected on the host first; if it is
 # already there, we skip it.
 #
-# Tools we ship into ProgramData\Chocolatey\bin so they end up on PATH:
-#   - wget   (downloaded prebuilt EXE from eternallybored.org)
-#   - yq     (downloaded prebuilt EXE from mikefarah/yq releases)
-#   - zstd   (built from source with Visual Studio 2022)
-#   - zip    (extracted from MSYS2 zip package; ARM64 reuses x64 binary
-#             via Windows x64 emulation)
+# Two categories of tools:
 #
-# This mirrors the original PowerShell logic that lived inside
-# bootstrap-build-publish.yml; the Python rewrite is functionally
-# identical but cross-architecture friendly.
-
-WIN_TOOLS = ("wget", "zstd", "zip", "yq")
+# Standalone (downloaded as individual binaries into ProgramData\Chocolatey\bin):
+#   - wget   (prebuilt EXE from eternallybored.org)
+#   - yq     (prebuilt EXE from mikefarah/yq releases)
+#   - zstd   (built from source with Visual Studio 2022)
+#   - ld.lld (copy of lld.exe — GNU-compatible LLD frontend for MinGW)
+#
+# MSYS2 (installed via pacman, files collected by snapshot diff into msys64/):
+#   - zip, rsync, tree, pkg-config (pkgconf)
+#   Uses the same before/after diff approach as brew on macOS.
 
 
 def _win_choco_bin(root: Path) -> Path:
@@ -705,42 +734,263 @@ def _win_add_zstd(arch: str, bin_dir: Path, work_root: Path) -> None:
     shutil.copy2(candidates[0], bin_dir / "zstd.exe")
 
 
-def _win_add_zip(bin_dir: Path, work_root: Path) -> None:
-    """Extract zip.exe from the MSYS2 x64 package. Both windows-x64 and
-    windows-arm64 use the same x64 binary -- ARM64 relies on Windows
-    built-in x64 emulation, so this is intentional."""
-    seven_zip = find_tool("7z") or find_tool("7z.exe")
-    if seven_zip is None:
-        fail("7z not found on PATH; required to unpack MSYS2 zip package")
+MSYS2_ROOT = Path(r"C:\msys64")
 
-    work = work_root / "zip"
-    stage1 = work / "stage1"
-    stage2 = work / "stage2"
-    for d in (work, stage1, stage2):
-        ensure_clean_dir(d)
+# Map of tools that come from MSYS2 packages.
+# key = tool name (as in WIN_TOOLS), value = MSYS2 package name.
+WIN_MSYS2_TOOLS: dict[str, str] = {
+    "zip":        "zip",
+    "rsync":      "rsync",
+    "tree":       "tree",
+    "pkg-config": "pkgconf",
+}
 
-    url = "https://mirror.msys2.org/msys/x86_64/zip-3.0-4-x86_64.pkg.tar.zst"
-    archive = work / "zip.pkg.tar.zst"
+
+def _win_msys2_pacman() -> str:
+    """Return path to pacman.exe inside the MSYS2 installation on the runner."""
+    p = MSYS2_ROOT / "usr" / "bin" / "pacman.exe"
+    if p.exists():
+        return str(p)
+    fail("pacman not found in C:\\msys64 — MSYS2 must be pre-installed on the runner")
+
+
+def _win_pacman_snapshot() -> set[str]:
+    """Return the set of currently installed MSYS2 packages."""
+    out = run_capture([_win_msys2_pacman(), "-Qq"])
+    return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+def _win_install_msys2_tools(missing_tools: list[str], root: Path) -> None:
+    """Install missing MSYS2 packages via pacman and collect new files into ROOT.
+
+    Uses the brew-style snapshot approach: snapshot installed packages
+    before, install what's needed, diff, then copy all new files into ROOT
+    preserving the msys64/ tree so that tar -xzf -C C:\\ lands them in
+    C:\\msys64\\... where they belong (and where msys-2.0.dll lives).
+
+    Executables from usr/bin/ are also placed into
+    ROOT/ProgramData/Chocolatey/bin/ so they appear on PATH without
+    requiring C:\\msys64\\usr\\bin in PATH (not guaranteed on all runners).
+    """
+    pacman = _win_msys2_pacman()
+    pkgs = [WIN_MSYS2_TOOLS[t] for t in missing_tools]
+
+    before = _win_pacman_snapshot()
+    info(f"MSYS2 packages before install: {len(before)}")
+
+    info(f"syncing MSYS2 package database")
+    run([pacman, "-Sy", "--noconfirm"])
+
+    info(f"installing MSYS2 packages: {' '.join(pkgs)}")
+    run([pacman, "-S", "--noconfirm", "--needed"] + pkgs)
+
+    after = _win_pacman_snapshot()
+    new_pkgs = sorted(after - before)
+    info(f"new MSYS2 packages (with deps): {len(new_pkgs)}")
+    for pkg in new_pkgs:
+        info(f"  + {pkg}")
+
+    if not new_pkgs:
+        info("no new MSYS2 packages installed (all were already present)")
+        return
+
+    choco_bin = root / WIN_CHOCO_BIN_REL
+    choco_bin.mkdir(parents=True, exist_ok=True)
+
+    # Collect files from each new package into ROOT/msys64/...
+    for pkg in new_pkgs:
+        out = run_capture([pacman, "-Ql", pkg])
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Format: "pkgname /usr/bin/foo.exe"
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                continue
+            msys_path = parts[1]  # e.g. /usr/bin/rsync.exe
+            # Skip directories (end with /)
+            if msys_path.endswith("/"):
+                continue
+            # Convert MSYS2 path to Windows path under C:\msys64
+            src = MSYS2_ROOT / msys_path.lstrip("/").replace("/", "\\")
+            if not src.exists():
+                continue
+            # Place in ROOT as msys64/... so tar -xzf -C C:\ works
+            rel = Path("msys64") / msys_path.lstrip("/")
+            dst = root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+            # Also put executables into ProgramData/Chocolatey/bin/ for PATH
+            if msys_path.startswith("/usr/bin/") and src.suffix.lower() in (".exe", ".dll"):
+                choco_dst = choco_bin / src.name
+                if not choco_dst.exists():
+                    shutil.copy2(src, choco_dst)
+
+    files = sum(1 for _ in (root / "msys64").rglob("*") if _.is_file())
+    info(f"MSYS2 files in ROOT: {files}")
+
+
+def _win_add_ld_lld(bin_dir: Path) -> None:
+    """Copy lld.exe as ld.lld.exe — GNU-compatible LLD frontend for MinGW."""
+    lld = find_tool("lld") or find_tool("lld.exe")
+    if lld is None:
+        fail("lld.exe not found on PATH; cannot create ld.lld copy")
+    shutil.copy2(lld, bin_dir / "ld.lld.exe")
+
+
+def _win_install_llvm_mingw(root: Path) -> None:
+    """Download llvm-mingw (native ARM64) and place it into ROOT so that
+    after extraction it lands at C:\\Program Files\\LLVM.
+
+    On consumer runners run/action.yml renames the stock MSVC-targeting
+    LLVM to _LLVM before extracting the bundle, so our files take over
+    the canonical C:\\Program Files\\LLVM path and land on PATH.
+
+    llvm-mingw includes: clang/clang++ targeting aarch64-w64-mingw32,
+    gcc/g++ wrapper shims, lld, llvm-ar, libc++ (static + shared),
+    libunwind, and the full MinGW-w64 sysroot (headers + import libs).
+    """
+    work = root.parent / "llvm-mingw-work"
+    ensure_clean_dir(work)
+
+    archive = work / "llvm-mingw.zip"
+    url = (
+        f"https://github.com/mstorsjo/llvm-mingw/releases/download/"
+        f"{LLVM_MINGW_RELEASE}/llvm-mingw-{LLVM_MINGW_RELEASE}-ucrt-aarch64.zip"
+    )
     download(url, archive)
 
-    run([seven_zip, "x", str(archive), f"-o{stage1}", "-y"])
+    group("Extract llvm-mingw")
+    import zipfile
+    with zipfile.ZipFile(archive) as zf:
+        zf.extractall(work)
 
-    inner = list(stage1.glob("*.tar"))
-    if not inner:
-        fail("inner tar not found inside MSYS2 zip package")
-    run([seven_zip, "x", str(inner[0]), f"-o{stage2}", "-y"])
+    # The zip contains a single top-level dir like
+    # llvm-mingw-20260407-ucrt-aarch64/
+    extracted = [p for p in work.iterdir()
+                 if p.is_dir() and p.name.startswith("llvm-mingw-")]
+    if not extracted:
+        fail("llvm-mingw: could not find extracted directory")
+    src = extracted[0]
+    info(f"llvm-mingw extracted: {src.name}")
+    endgroup()
 
-    zip_exe = stage2 / "usr" / "bin" / "zip.exe"
-    if not zip_exe.exists():
-        fail(f"zip.exe not found in extracted package: {zip_exe}")
-    shutil.copy2(zip_exe, bin_dir / "zip.exe")
+    # Place into ROOT so tar -xzf -C C:\ puts it at C:\Program Files\LLVM
+    dst = root / WIN_LLVM_DIR
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+
+    # llvm-mingw ships ld.lld.exe but may omit bare lld.exe which tests
+    # expect.  Create a copy so both names resolve on PATH.
+    bin_dst = dst / "bin"
+    lld_exe = bin_dst / "lld.exe"
+    ld_lld_exe = bin_dst / "ld.lld.exe"
+    if not lld_exe.exists() and ld_lld_exe.exists():
+        shutil.copy2(ld_lld_exe, lld_exe)
+        info("created lld.exe as copy of ld.lld.exe")
+
+    n_files = sum(1 for _ in dst.rglob("*") if _.is_file())
+    info(f"llvm-mingw installed into ROOT/{WIN_LLVM_DIR}: {n_files} files")
+
+
+# MSYS2 sfx for windows-arm64: there is no pre-installed MSYS2 on
+# windows-11-arm runners and no native arm64 builds of zip/rsync.  We
+# download the x86_64 MSYS2 sfx, install zip + rsync via pacman, then
+# copy the minimal set of .exe + msys-*.dll into
+# ROOT/ProgramData/Chocolatey/bin/.  The binaries run under x64
+# emulation (xtajit64.dll) on arm64.  Diagnostic run 24397871149
+# confirmed the exact dependency graph captured below.
+WIN_ARM64_MSYS2_SFX_URL = (
+    "https://github.com/msys2/msys2-installer/releases/download/"
+    "nightly-x86_64/msys2-base-x86_64-latest.sfx.exe"
+)
+
+# Files to lift out of MSYS2 /usr/bin into the bundle.  Keyed by tool
+# name; each entry lists the .exe plus the msys-*.dll it depends on
+# (per `ldd` output from the diagnostic probe).  Duplicates between
+# tools are deduped when copying.
+WIN_ARM64_MSYS2_FILES: dict[str, list[str]] = {
+    "zip": [
+        "zip.exe",
+        "msys-2.0.dll",
+    ],
+    "rsync": [
+        "rsync.exe",
+        "msys-2.0.dll",
+        "msys-crypto-3.dll",
+        "msys-iconv-2.dll",
+        "msys-zstd-1.dll",
+        "msys-lz4-1.dll",
+        "msys-xxhash-0.dll",
+    ],
+}
+
+
+def _win_arm64_install_msys2_tools(root: Path, work_root: Path) -> None:
+    """Install zip + rsync from MSYS2 (x86_64) into the windows-arm64 bundle.
+
+    MSYS2 is not pre-installed on windows-11-arm runners and has no
+    native arm64 build for these tools.  We download the sfx, run
+    pacman, then lift the minimal set of .exe + msys-*.dll into
+    ROOT/ProgramData/Chocolatey/bin/ so they appear on PATH as-is
+    after the bundle is extracted on a consumer.
+    """
+    msys_root = work_root / "msys64"
+    if msys_root.exists():
+        shutil.rmtree(msys_root)
+
+    sfx = work_root / "msys2.sfx.exe"
+    download(WIN_ARM64_MSYS2_SFX_URL, sfx)
+
+    group("Extract MSYS2 sfx")
+    # The sfx extracts msys64/ into its current working directory.
+    # Invoked with no args to match the diagnostic probe (run 24397871149).
+    run([str(sfx)], cwd=work_root)
+    bash = msys_root / "usr" / "bin" / "bash.exe"
+    if not bash.exists():
+        fail(f"MSYS2 bash not found at {bash} after sfx extraction")
+    endgroup()
+
+    group("Install zip + rsync via pacman")
+    # --login sources /etc/profile so /usr/bin ends up on PATH; without
+    # it pacman-key/pacman are not found.  Fresh sfx already has base
+    # keys populated, so we skip `pacman-key --init` and only sync the
+    # repo database.
+    run([str(bash), "--login", "-c", "pacman -Syy --noconfirm"])
+    run([str(bash), "--login", "-c",
+         "pacman -S --noconfirm --needed zip rsync"])
+    endgroup()
+
+    src_bin = msys_root / "usr" / "bin"
+    choco_bin = root / WIN_CHOCO_BIN_REL
+    choco_bin.mkdir(parents=True, exist_ok=True)
+
+    wanted: set[str] = set()
+    for files in WIN_ARM64_MSYS2_FILES.values():
+        wanted.update(files)
+
+    for name in sorted(wanted):
+        src = src_bin / name
+        if not src.exists():
+            fail(f"expected MSYS2 file missing after pacman: {src}")
+        shutil.copy2(src, choco_bin / name)
+        info(f"  + {name} ({src.stat().st_size:,} bytes)")
 
 
 def build_windows(arch: str, root: Path) -> None:
     """Build a Windows bootstrap ROOT for the given arch (x64 or arm64).
 
-    Detects each tool on the host first; only missing ones are added to
-    the bundle. Result lands in ROOT/ProgramData/Chocolatey/bin/.
+    Standalone tools (wget, yq, zstd, ld.lld) are downloaded as individual
+    binaries into ROOT/ProgramData/Chocolatey/bin/.
+
+    MSYS2 tools (zip, rsync, tree, pkg-config) are installed via pacman and
+    their files are collected into ROOT/msys64/... using a before/after
+    snapshot diff (same approach as brew on macOS). On consumer runners
+    C:\\msys64 is already on PATH, so the binaries work out of the box.
     """
     if sys.platform != "win32":
         fail(f"build_windows must run on a Windows host (sys.platform={sys.platform})")
@@ -749,23 +999,37 @@ def build_windows(arch: str, root: Path) -> None:
     work_root = root.parent / f"bootstrap-work-{arch}"
     ensure_clean_dir(work_root)
 
-    for tool in WIN_TOOLS:
+    # -- Standalone tools (individual downloads) ----------------------------
+    standalone_handlers = {
+        "wget":   lambda: _win_add_wget(arch, bin_dir),
+        "yq":     lambda: _win_add_yq(arch, bin_dir),
+        "zstd":   lambda: _win_add_zstd(arch, bin_dir, work_root),
+        "ld.lld": lambda: _win_add_ld_lld(bin_dir),
+    }
+
+    for tool, handler in standalone_handlers.items():
         group(f"Tool: {tool}")
         existing = find_tool(tool) or find_tool(f"{tool}.exe")
         if existing:
             info(f"{tool}: present on runner at {existing}, skipping")
-            endgroup()
-            continue
+        else:
+            info(f"{tool}: missing on runner, adding to bundle")
+            handler()
+        endgroup()
 
-        info(f"{tool}: missing on runner, adding to bundle")
-        if tool == "wget":
-            _win_add_wget(arch, bin_dir)
-        elif tool == "yq":
-            _win_add_yq(arch, bin_dir)
-        elif tool == "zstd":
-            _win_add_zstd(arch, bin_dir, work_root)
-        elif tool == "zip":
-            _win_add_zip(bin_dir, work_root)
+    # -- MSYS2 tools (via pacman snapshot diff) -----------------------------
+    msys2_missing = []
+    for tool in WIN_MSYS2_TOOLS:
+        existing = find_tool(tool) or find_tool(f"{tool}.exe")
+        if existing:
+            info(f"{tool}: present on runner at {existing}, skipping")
+        else:
+            info(f"{tool}: missing on runner, will install via MSYS2")
+            msys2_missing.append(tool)
+
+    if msys2_missing:
+        group(f"MSYS2 install: {' '.join(msys2_missing)}")
+        _win_install_msys2_tools(msys2_missing, root)
         endgroup()
 
     # libc++ for clang -- not present on stock Windows runners.
@@ -782,7 +1046,61 @@ def build_windows_x64(root: Path) -> None:
 
 
 def build_windows_arm64(root: Path) -> None:
-    build_windows("arm64", root)
+    """Build Windows ARM64 bootstrap ROOT.
+
+    Key difference from x64: the stock LLVM on the runner targets
+    aarch64-pc-windows-msvc and there is no native GCC or MSYS2.
+    We replace the entire LLVM installation with llvm-mingw, which
+    provides a MinGW-targeting toolchain (clang, gcc/g++ shims, lld,
+    libc++, and a full MinGW-w64 sysroot).  libc++ is included so
+    install_libcxx() is a no-op for this platform.
+
+    MSYS2 tools: windows-11-arm runners have no pre-installed MSYS2
+    and no native arm64 build of zip/rsync exists.  We download the
+    MSYS2 x86_64 sfx, install zip + rsync via pacman, and copy the
+    minimal set of .exe + msys-*.dll into
+    ROOT/ProgramData/Chocolatey/bin/.  These run under x64 emulation
+    (xtajit64.dll) on arm64.  tree/pkg-config are not bundled for
+    arm64 yet — add them here if bootstrap-test.py grows tests that
+    need them.
+    """
+    if sys.platform != "win32":
+        fail(f"build_windows_arm64 must run on a Windows host (sys.platform={sys.platform})")
+
+    bin_dir = _win_choco_bin(root)
+    work_root = root.parent / "bootstrap-work-arm64"
+    ensure_clean_dir(work_root)
+
+    # -- llvm-mingw: replaces stock MSVC-targeting LLVM ----------------------
+    group("llvm-mingw toolchain")
+    _win_install_llvm_mingw(root)
+    endgroup()
+
+    # -- Standalone tools (same as x64 minus ld.lld which comes with
+    #    llvm-mingw) -----------------------------------------------------------
+    standalone_handlers = {
+        "wget": lambda: _win_add_wget("arm64", bin_dir),
+        "yq":   lambda: _win_add_yq("arm64", bin_dir),
+        "zstd": lambda: _win_add_zstd("arm64", bin_dir, work_root),
+    }
+
+    for tool, handler in standalone_handlers.items():
+        group(f"Tool: {tool}")
+        existing = find_tool(tool) or find_tool(f"{tool}.exe")
+        if existing:
+            info(f"{tool}: present on runner at {existing}, skipping")
+        else:
+            info(f"{tool}: missing on runner, adding to bundle")
+            handler()
+        endgroup()
+
+    # -- MSYS2 tools: zip + rsync via x86_64 sfx + emulation -----------------
+    group("MSYS2 tools (zip, rsync) via x86_64 sfx")
+    _win_arm64_install_msys2_tools(root, work_root)
+    endgroup()
+
+    files = list(root.rglob("*"))
+    info(f"ROOT contains {sum(1 for f in files if f.is_file())} files")
 
 
 # ---------------------------------------------------------------------------

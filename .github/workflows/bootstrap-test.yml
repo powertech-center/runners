@@ -91,25 +91,25 @@ jobs:
           platform: macos-arm64
           checkout: true
           command: python3 bootstrap-test.py
-  #
-  # windows-x64:
-  #   name: "Test (windows-x64)"
-  #   runs-on: windows-latest
-  #   timeout-minutes: 30
-  #   steps:
-  #     - uses: powertech-center/runners/run@develop
-  #       with:
-  #         platform: windows-x64
-  #         checkout: true
-  #         command: python3 bootstrap-test.py
-  #
-  # windows-arm64:
-  #   name: "Test (windows-arm64)"
-  #   runs-on: windows-11-arm
-  #   timeout-minutes: 30
-  #   steps:
-  #     - uses: powertech-center/runners/run@develop
-  #       with:
-  #         platform: windows-arm64
-  #         checkout: true
-  #         command: python3 bootstrap-test.py
+
+  windows-x64:
+    name: "Test (windows-x64)"
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: powertech-center/runners/run@develop
+        with:
+          platform: windows-x64
+          checkout: true
+          command: python3 bootstrap-test.py
+
+  windows-arm64:
+    name: "Test (windows-arm64)"
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: powertech-center/runners/run@develop
+        with:
+          platform: windows-arm64
+          checkout: true
+          command: python3 bootstrap-test.py
