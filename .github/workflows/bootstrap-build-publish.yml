@@ -8,13 +8,13 @@ name: "Bootstrap: Build & Publish"
 # OCI manifest and extracts the blob with `tar -xzf patch.tar.gz -C /`
 # (or `C:\`). The published archive is therefore exactly one gzipped
 # tar with paths from the filesystem root -- no manifest, no extra
-# layers. See CLAUDE.md for the rationale and the per-iteration plan.
+# layers. See CLAUDE.md for the rationale.
 #
 # Gating: each job builds patch.tar.gz, then EMULATES the consumer-side
 # bootstrap by extracting the freshly built archive into / (or C:\) on
 # the build runner itself, then runs bootstrap-test.py against that
 # in-place layout. Only if tests pass does the job push to GHCR. This
-# guarantees we never publish a broken bundle. Iteration 6 of the plan.
+# guarantees we never publish a broken bundle.
 
 on:
   workflow_dispatch:
@@ -31,7 +31,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # -- Iteration 1+2: Windows + macOS --------------------------------
+          - platform: linux-x64-musl
+            runner: ubuntu-24.04
+          - platform: linux-arm64-musl
+            runner: ubuntu-24.04-arm
           - platform: windows-x64
             runner: windows-latest
           - platform: windows-arm64
@@ -40,20 +43,10 @@ jobs:
             runner: macos-26-intel
           - platform: macos-arm64
             runner: macos-26
-
-          # -- Iteration 3: Linux gnu ----------------------------------------
           - platform: linux-x64-gnu
             runner: ubuntu-24.04
           - platform: linux-arm64-gnu
             runner: ubuntu-24.04-arm
-
-          # -- Iteration 5: Linux musl (Alpine overlay) ----------------------
-          # Temporarily disabled while we stabilize linux-gnu. Re-enable
-          # after gnu is green; then fix musl apk-via-ld-musl loader.
-          # - platform: linux-x64-musl
-          #   runner: ubuntu-24.04
-          # - platform: linux-arm64-musl
-          #   runner: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@v5
@@ -75,24 +68,58 @@ jobs:
       - name: Emulate bootstrap (Unix)
         if: "!startsWith(matrix.platform, 'windows')"
         shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
         run: |
           set -e
           ARCHIVE="${RUNNER_TEMP}/patch.tar.gz"
           ls -la "$ARCHIVE"
-          # Show archive top-level layout for diagnostics. Disable
-          # pipefail for the listing pipelines because `tar -tzf | head`
-          # would otherwise abort with SIGPIPE under `set -o pipefail`.
-          set +o pipefail
-          echo "=== tar contents (first 40 entries) ==="
-          tar -tzf "$ARCHIVE" | head -40
-          echo "=== libc++ entries in archive ==="
-          tar -tzf "$ARCHIVE" | grep -E "libc\+\+|libunwind" || true
-          set -o pipefail
+
+          # Per-platform prepare: rename host files aside so the bundle
+          # replaces them cleanly. Mirrors run/action.yml prepare logic
+          # so the emulated path and the consumer path use the same
+          # transformation. Non-fatal if a target is absent.
+          case "$PLATFORM" in
+            linux-x64-musl|linux-arm64-musl)
+              ARCH="$(uname -m)"
+              case "$ARCH" in
+                x86_64)  MULTIARCH="x86_64-linux-gnu" ;;
+                aarch64) MULTIARCH="aarch64-linux-gnu" ;;
+              esac
+              _rename() {
+                SRC="$1"; PARENT="$(dirname "$SRC")"; BASE="$(basename "$SRC")"
+                [ -e "$SRC" ] || [ -L "$SRC" ] || return 0
+                sudo mv "$SRC" "$PARENT/_$BASE"
+              }
+              _rename "/etc/lsb-release"
+              _rename "/usr/include/${MULTIARCH}"
+              _rename "/usr/bin/clang"
+              _rename "/usr/bin/clang++"
+              _rename "/usr/bin/cc"
+              _rename "/usr/bin/c++"
+              _rename "/usr/bin/ld.lld"
+              for pair in "clang clang-18" "clang++ clang++-18" "ld.lld ld.lld-18"; do
+                set -- $pair
+                UNV="$1"; VER="$2"
+                if [ ! -e "/usr/bin/_$UNV" ] && [ -x "/usr/bin/$VER" ]; then
+                  sudo ln -sf "/usr/bin/$VER" "/usr/bin/_$UNV"
+                fi
+              done
+              REAL_DIR="/home/runner/.cargo/bin/_rustup-real"
+              sudo mkdir -p "$REAL_DIR"
+              for tool in rustc cargo rustup; do
+                SRC="/home/runner/.cargo/bin/$tool"
+                if [ -e "$SRC" ] && [ ! -e "$REAL_DIR/$tool" ]; then
+                  sudo cp -a "$SRC" "$REAL_DIR/$tool"
+                fi
+              done
+              ;;
+          esac
+
           # Extract in place at /. Do NOT swallow stderr -- if this fails we
           # want the build to stop here, not later in the gating tests with
           # a confusing linker error. `tar -xz -C /` overwrites existing
           # files under paths we own (we ship absolute paths from /).
-          echo "=== extracting to / ==="
           if [ "$(uname -s)" = "Darwin" ]; then
             # macOS bsdtar: -m skips restoring mtime, -o skips restoring
             # ownership -- both fail on the read-only /usr/ volume (Intel).
@@ -101,10 +128,6 @@ jobs:
             # GNU tar: --no-overwrite-dir avoids touching existing dir metadata.
             sudo tar --no-overwrite-dir -xzf "$ARCHIVE" -C /
           fi
-          echo "=== libc++ files actually present on host after extract ==="
-          ls -la /usr/lib/x86_64-linux-gnu/libc++* 2>/dev/null || true
-          ls -la /usr/lib/aarch64-linux-gnu/libc++* 2>/dev/null || true
-          ls -la /usr/lib/llvm-18/lib/libc++* 2>/dev/null || true
 
       - name: Prepare (Windows arm64 — rename stock LLVM)
         if: matrix.platform == 'windows-arm64'

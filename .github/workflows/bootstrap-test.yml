@@ -6,14 +6,8 @@ name: "Bootstrap: Test"
 # After bootstrap the job runs bootstrap-test.py against the freshly
 # prepared runner to verify the published bundle still works from a
 # cold start, not just under the in-place emulation of the build job.
-#
-# NOTE: we reference the action at feature/debug so that this workflow
-# exercises the current in-development run/action.yml alongside the
-# latest published bundle. Flip back to @develop / @main once the
-# bootstrap work lands on the mainline.
 
 on:
-  push:
   workflow_dispatch:
   schedule:
     # Weekly smoke-test of the latest published bundles against a cold
@@ -44,32 +38,28 @@ jobs:
           checkout: true
           command: python3 bootstrap-test.py
 
-  # -- Disabled until bootstrap-build-publish.yml publishes these platforms
-  #    again. Re-enable in lockstep with the matrix in
-  #    bootstrap-build-publish.yml.
-  #
-  # linux-x64-musl:
-  #   name: "Test (linux-x64-musl)"
-  #   runs-on: ubuntu-24.04
-  #   timeout-minutes: 30
-  #   steps:
-  #     - uses: powertech-center/runners/run@develop
-  #       with:
-  #         platform: linux-x64-musl
-  #         checkout: true
-  #         command: python3 bootstrap-test.py
-  #
-  # linux-arm64-musl:
-  #   name: "Test (linux-arm64-musl)"
-  #   runs-on: ubuntu-24.04-arm
-  #   timeout-minutes: 30
-  #   steps:
-  #     - uses: powertech-center/runners/run@develop
-  #       with:
-  #         platform: linux-arm64-musl
-  #         checkout: true
-  #         command: python3 bootstrap-test.py
-  #
+  linux-x64-musl:
+    name: "Test (linux-x64-musl)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: powertech-center/runners/run@develop
+        with:
+          platform: linux-x64-musl
+          checkout: true
+          command: python3 bootstrap-test.py
+
+  linux-arm64-musl:
+    name: "Test (linux-arm64-musl)"
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: powertech-center/runners/run@develop
+        with:
+          platform: linux-arm64-musl
+          checkout: true
+          command: python3 bootstrap-test.py
+
   macos-x64:
     name: "Test (macos-x64)"
     runs-on: macos-26-intel

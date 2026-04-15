@@ -17,20 +17,15 @@ If --root is not provided, defaults to:
 
 If --pack is given, also creates patch.tar.gz next to the root directory.
 
-Supported platforms (full set, but only the listed ones are implemented
-in the current iteration -- others will raise NotImplementedError):
+Supported platforms (all 8 implemented):
 
-    linux-x64-gnu       not yet implemented
-    linux-x64-musl      not yet implemented
-    linux-arm64-gnu     not yet implemented
-    linux-arm64-musl    not yet implemented
-    macos-x64           not yet implemented
-    macos-arm64         not yet implemented
-    windows-x64         IMPLEMENTED
-    windows-arm64       not yet implemented
+    linux-x64-gnu, linux-arm64-gnu
+    linux-x64-musl, linux-arm64-musl
+    macos-x64, macos-arm64
+    windows-x64, windows-arm64
 
 See CLAUDE.md section "bootstrap-build.py -- статус и план разработки"
-for the full plan and design rationale.
+for the design rationale and per-platform notes.
 """
 
 import argparse
@@ -393,7 +388,8 @@ def prepare_root(root: Path) -> None:
 #     ship libunwind-18-dev (from LLVM 18) which declares `Conflicts:
 #     libunwind-dev`, and apt-installed libc++abi links against the
 #     system libgcc_s unwinder so libunwind is not required at runtime.
-#   - Linux musl: deferred to iteration 5 (depends on the apk overlay).
+#   - Linux musl: libc++ comes from Alpine's libc++-static apk package
+#     installed by build_linux_musl(), so install_libcxx() is a no-op.
 #   - Windows: build from llvm-project sources (~minutes) because no
 #     prepackaged static libc++ for Windows exists. Install into ROOT
 #     under Program Files/LLVM.
@@ -637,8 +633,8 @@ def install_libcxx(platform: str, root: Path) -> None:
     elif platform == "linux-arm64-gnu":
         _libcxx_linux_gnu("arm64", root)
     elif platform == "linux-x64-musl":
-        # Handled inside the musl overlay (apk add libc++-dev) in
-        # iteration 5.
+        # Handled inside the musl overlay (apk add libc++-dev) by
+        # build_linux_musl().
         info("libc++: linux musl uses apk install (handled by overlay)")
     elif platform == "linux-arm64-musl":
         info("libc++: linux musl uses apk install (handled by overlay)")
@@ -1292,15 +1288,9 @@ def build_macos_arm64(root: Path) -> None:
 # very rich toolchain by default: gcc, g++, clang, cmake, ninja, make,
 # python3, node/npm, go, rustc, cargo, dotnet, java, ruby, perl, php,
 # jq, yq, curl, wget, git, git-lfs, zip/unzip, zstd, xz, p7zip, tree,
-# and more. For the "gnu" platforms in iteration 3 there is therefore
-# nothing to ship that is not already on the runner.
-#
-# Iteration 4 will add libc++ (built natively from llvm-project sources)
-# under /usr/include/c++/v1 and /usr/lib/{x86_64,aarch64}-linux-gnu, so
-# the bundle becomes non-empty later. For now we audit a small set of
-# expected tools and produce an empty ROOT, which the publish step
-# packs into an empty (gzip-only) tar.gz. An empty bundle is a legal
-# outcome -- run/action.yml extracts it as a no-op.
+# and more. We only need to add libc++ (apt libc++-{N}-dev) and a few
+# unversioned LLVM binutils symlinks (lld, ld.lld, llvm-ar). Everything
+# else is already in place on the host.
 
 LINUX_GNU_EXPECTED = (
     "gcc", "g++", "clang", "cmake", "ninja", "make", "python3", "node",
@@ -1438,18 +1428,18 @@ def build_linux_arm64_gnu(root: Path) -> None:
 #      INTO ROOT (the consumer's bootstrap step will see both versions
 #      and pick up the musl one through the standard search path).
 #
-# Notes / known limitations of this iteration:
-#   - The clang/rust wrapper system from pseudo-alpine is NOT yet
-#     ported. Wrappers are needed for `clang -> musl by default` and
-#     `rustc -> --target=musl`. They are non-critical for basic gcc
-#     builds and will land in a follow-up if needed.
+# Notes / known limitations:
 #   - find-alpine-version.py (dynamic Alpine branch selection by host
-#     GCC major version) is not yet ported. We use latest-stable for
-#     the first pass; if header incompatibilities surface in CI we
-#     will port the dynamic selector.
+#     GCC major version) is not ported. We pin v3.21 statically (see
+#     ALPINE_BRANCH_DEFAULT comment below).
 
 ALPINE_MIRROR = "https://dl-cdn.alpinelinux.org/alpine"
-ALPINE_BRANCH_DEFAULT = "latest-stable"
+# Pinned to v3.21 -- ships clang-18 / libc++-18 matching the clang-18 on
+# ubuntu-24.04 GitHub runners. latest-stable (3.23) ships libc++-21, whose
+# headers use __builtin_ctzg (clang 19+) and fail with our host clang 18.
+# Revisit when the runner image moves to clang >= 21 or we build libc++
+# from source inside the bundle.
+ALPINE_BRANCH_DEFAULT = "v3.21"
 
 
 def _alpine_arch_name(arch: str) -> str:
@@ -1503,6 +1493,54 @@ def _extract_tar_into(archive: Path, dest: Path) -> None:
         tf.extractall(dest)
 
 
+def _usr_merge_dir(root: Path, top: str) -> None:
+    """Move ROOT/<top>/* into ROOT/usr/<top>/ and remove ROOT/<top>.
+    Required for Ubuntu compatibility: Ubuntu's root FS has /lib, /bin,
+    /sbin as symlinks into /usr, and extracting an Alpine minirootfs
+    (which uses real /lib etc.) on top would replace the symlink with a
+    real directory, making all /lib/<multiarch>/... paths inaccessible.
+    By emitting only usr/ entries, the bundle leaves the host's top-level
+    symlinks untouched, and all our /lib/foo references resolve via the
+    existing /lib -> /usr/lib redirection."""
+    src = root / top
+    dst = root / "usr" / top
+    if src.is_symlink():
+        # Alpine ships e.g. /lib64 -> /lib; shipping that symlink would
+        # replace the host's lib64 -> usr/lib64 on extract. Drop it.
+        src.unlink()
+        info(f"usr-merge: removed top-level symlink {top}")
+        return
+    if not src.exists():
+        return
+    dst.mkdir(parents=True, exist_ok=True)
+
+    def _merge(a: Path, b: Path) -> None:
+        for entry in list(a.iterdir()):
+            target = b / entry.name
+            if entry.is_symlink():
+                link = os.readlink(entry)
+                if target.exists() or target.is_symlink():
+                    target.unlink()
+                os.symlink(link, target)
+                entry.unlink()
+            elif entry.is_dir():
+                if target.exists() and target.is_dir() and not target.is_symlink():
+                    _merge(entry, target)
+                    entry.rmdir()
+                else:
+                    if target.exists() or target.is_symlink():
+                        target.unlink()
+                    entry.rename(target)
+            else:
+                if target.exists() or target.is_symlink():
+                    target.unlink()
+                entry.rename(target)
+
+    _merge(src, dst)
+    src.rmdir()
+    info(f"usr-merge: {top}/ -> usr/{top}/ (top-level dir removed)")
+
+
 def _write_ldd_shim(root: Path, alpine_arch: str) -> None:
     ldd = root / "usr" / "bin" / "ldd"
     ldd.parent.mkdir(parents=True, exist_ok=True)
@@ -1535,34 +1573,535 @@ MUSL_APK_PACKAGES = (
     "g++",
     "libstdc++-dev",
     "libc++-dev",
+    # libc++-static on Alpine ships /usr/lib/libc++.a, /usr/lib/libc++abi.a,
+    # and /usr/lib/libc++experimental.a in a single package (no separate
+    # libc++abi-static package exists).
     "libc++-static",
-    "libc++abi-static",
+    "llvm-libunwind-static",
+    # compiler-rt provides libclang_rt.builtins-*.a which clang uses when
+    # invoked as --rtlib=compiler-rt. We pair it with --unwindlib=libunwind
+    # in the static libc++ path to avoid pulling libgcc_eh.a (which has
+    # _Unwind_* symbols that collide with LLVM libunwind).
+    "compiler-rt",
 )
 
 
-def _apk_install_into_root(root: Path) -> None:
-    """Run apk with --root pointed at our ROOT to install packages.
-    Prefers the static apk binary that came with the freshly extracted
-    Alpine minirootfs (ROOT/sbin/apk) so we do not need apk-tools on
-    the host at all -- ubuntu-24.04 noble dropped it from universe.
+# Host paths we rename with a leading underscore when bootstrapping the
+# musl overlay. The bundle lays down wrappers at the unversioned paths
+# (/usr/bin/clang, /usr/bin/ld.lld, ...); these renames hide conflicting
+# host files so the wrapper always wins. Implemented as a constant so
+# both run/action.yml and bootstrap-build-publish.yml can source the
+# exact same list.
+LINUX_MUSL_HOST_RENAMES = (
+    "/etc/lsb-release",
+    "/usr/include/{multiarch}",       # e.g. /usr/include/x86_64-linux-gnu
+    "/usr/bin/clang",
+    "/usr/bin/clang++",
+    "/usr/bin/cc",
+    "/usr/bin/c++",
+    "/usr/bin/ld.lld",
+)
+
+
+# ---------------------------------------------------------------------------
+# Musl wrappers for clang / clang++ / ld.lld / rustc
+# ---------------------------------------------------------------------------
+#
+# On a linux-x64-musl runner we transform the host Ubuntu system so that
+# `clang`, `clang++`, `ld.lld` and `rustc` behave as if they were native
+# musl-linux tools. The real compilers stay in the host image (Ubuntu's
+# clang-18, ld.lld-18, rustup's rustc); our wrappers at the unversioned
+# paths inject the musl target, correct `--gcc-install-dir` (Alpine's
+# GCC toolchain from apk lives under x86_64-alpine-linux-musl, whereas
+# clang expects x86_64-linux-musl -- handled by a symlink we create),
+# and for linker wrappers a default -m emulation.
+#
+# Behaviour contract:
+#
+#   clang / clang++:
+#     - No --target and no --sysroot   -> musl mode (inject --target=
+#       and --gcc-install-dir=)
+#     - Explicit --target=*-linux-musl -> musl mode, still inject
+#       --gcc-install-dir= if user did not set it
+#     - Explicit --target= non-musl OR --sysroot= -> full passthrough
+#       to the real host compiler (no flags added)
+#     - User's explicit --gcc-install-dir / --gcc-toolchain / -stdlib
+#       are never overridden
+#
+#   ld.lld:
+#     - No -m flag -> inject default elf_x86_64 / aarch64linux
+#     - -m already present -> passthrough
+#
+#   rustc:
+#     - No --target -> inject --target=<arch>-unknown-linux-musl
+#     - Explicit --target -> passthrough
+#
+# All wrappers honour MUSL_WRAPPER_DEBUG=1 by printing the final exec
+# line to stderr before running it.
+
+def _clang_wrapper_source(driver: str, arch: str, real_path: str, gcc_dir: str) -> str:
+    """Return the shell source for a clang / clang++ wrapper.
+
+    driver   -- 'gcc' or 'g++' (passed to clang via --driver-mode=)
+    arch     -- 'x86_64' or 'aarch64'
+    real_path-- absolute path to the real clang binary on the host
+    gcc_dir  -- absolute path to the Alpine GCC install dir (where clang
+                looks for crtbeginS.o etc.). The wrapper injects
+                --gcc-install-dir=<gcc_dir> unless the user already
+                specified one.
     """
-    candidate = root / "sbin" / "apk.static"
-    if not candidate.exists():
-        candidate = root / "sbin" / "apk"
-    apk: str | None = None
-    if candidate.exists() and os.access(candidate, os.X_OK):
-        apk = str(candidate)
-    else:
-        apk = find_tool("apk") or find_tool("apk.static")
-    if apk is None:
+    target = f"{arch}-linux-musl"
+    return f"""#!/bin/sh
+# musl-overlay wrapper: clang driver-mode={driver} default-target={target}
+# Generated by bootstrap-build.py -- do not edit.
+#
+# Behaviour: if the user specifies a non-musl --target= or an explicit
+# --sysroot= we passthrough to the real host compiler. Otherwise we
+# inject --target={target} and --gcc-install-dir={gcc_dir} (unless the
+# user specified their own).
+
+# No args -> just show version in musl mode so the banner is correct
+if [ $# -eq 0 ]; then
+    exec {real_path} --driver-mode={driver} --target={target} --gcc-install-dir={gcc_dir}
+fi
+
+_has_target=false
+_has_sysroot=false
+_has_gcc_dir=false
+_has_libcxx=false
+_has_static=false
+_target_val=""
+_prev=""
+for _a in "$@"; do
+    case "$_prev" in
+        -target|--target)                          _has_target=true; _target_val="$_a" ;;
+        --sysroot)                                 _has_sysroot=true ;;
+        --gcc-install-dir|--gcc-toolchain)         _has_gcc_dir=true ;;
+    esac
+    case "$_a" in
+        --target=*)                                _has_target=true; _target_val="${{_a#--target=}}" ;;
+        --sysroot=*)                               _has_sysroot=true ;;
+        --gcc-install-dir=*|--gcc-toolchain=*)     _has_gcc_dir=true ;;
+        -stdlib=libc++|--stdlib=libc++)            _has_libcxx=true ;;
+        -static|--static)                          _has_static=true ;;
+    esac
+    _prev="$_a"
+done
+
+# Explicit --sysroot= -> user knows what they're doing, full passthrough.
+if [ "$_has_sysroot" = true ]; then
+    [ "${{MUSL_WRAPPER_DEBUG:-}}" = "1" ] && echo "[musl-wrapper] passthrough (sysroot): {real_path} --driver-mode={driver} $*" >&2
+    exec {real_path} --driver-mode={driver} "$@"
+fi
+
+# Explicit non-musl --target -> passthrough.
+if [ "$_has_target" = true ]; then
+    case "$_target_val" in
+        *-linux-musl|*-linux-musl*) ;;
+        *)
+            [ "${{MUSL_WRAPPER_DEBUG:-}}" = "1" ] && echo "[musl-wrapper] passthrough (target=$_target_val): {real_path} --driver-mode={driver} $*" >&2
+            exec {real_path} --driver-mode={driver} "$@"
+            ;;
+    esac
+fi
+
+# Musl mode: inject flags the user did not specify.
+_extra=""
+[ "$_has_target"  = false ] && _extra="--target={target}"
+[ "$_has_gcc_dir" = false ] && _extra="${{_extra:+$_extra }}--gcc-install-dir={gcc_dir}"
+
+# -stdlib=libc++ -static on Linux musl: clang driver by default pulls
+# -lgcc_eh (GCC unwinder) because rtlib=libgcc. GCC's libgcc_eh defines
+# _Unwind_GetGR/SetGR/GetIP/etc., which collide with the same symbols in
+# LLVM's libunwind.a (from Alpine's llvm-libunwind-static). Fix by telling
+# clang to use LLVM's unwinder instead: --unwindlib=libunwind swaps the
+# auto-added -lgcc_eh for -lunwind. We also append -lc++abi explicitly
+# because /usr/bin/ld (GNU bfd) links strictly in order and doesn't group
+# libc++ with libc++abi for static builds.
+_pre=""
+_post=""
+if [ "$_has_libcxx" = true ] && [ "$_has_static" = true ]; then
+    # Clang rejects --unwindlib=libunwind with the default --rtlib=libgcc,
+    # so flip both: compiler-rt for builtins, libunwind for unwind. This
+    # avoids libgcc_eh.a (which would collide with LLVM libunwind.a on
+    # _Unwind_* symbols).
+    _pre="--rtlib=compiler-rt --unwindlib=libunwind"
+    _post="-lc++abi"
+fi
+
+[ "${{MUSL_WRAPPER_DEBUG:-}}" = "1" ] && echo "[musl-wrapper] {real_path} --driver-mode={driver}${{_extra:+ $_extra}}${{_pre:+ $_pre}} $*${{_post:+ $_post}}" >&2
+
+# shellcheck disable=SC2086
+exec {real_path} --driver-mode={driver} $_extra $_pre "$@" $_post
+"""
+
+
+def _lld_wrapper_source(arch: str, real_path: str) -> str:
+    """Shell source for the ld.lld wrapper.
+
+    real_path -- absolute path to the real host ld.lld binary.
+    """
+    emulation = "elf_x86_64" if arch == "x86_64" else "aarch64linux"
+    # bash is required for `exec -a NAME`. lld's binary switches flavor
+    # based on basename(argv[0]); invoking it via /usr/bin/_ld.lld makes
+    # argv[0]=_ld.lld (unknown flavor) and lld prints "lld is a generic
+    # driver" instead of version info. Spoof argv[0]=ld.lld.
+    return f"""#!/bin/bash
+# musl-overlay wrapper: ld.lld default-emulation={emulation}
+# Generated by bootstrap-build.py -- do not edit.
+
+# Informational flags -- passthrough, no -m injection.
+for _a in "$@"; do
+    case "$_a" in
+        --version|-v|-V|--help|-help|--repro)
+            [ "${{MUSL_WRAPPER_DEBUG:-}}" = "1" ] && echo "[musl-wrapper] ld.lld passthrough: $*" >&2
+            exec -a ld.lld {real_path} "$@"
+            ;;
+    esac
+done
+
+_has_m=false
+for _a in "$@"; do
+    case "$_a" in
+        -m|-m?*|--emulation|--emulation=*) _has_m=true; break ;;
+    esac
+done
+
+_extra=""
+[ "$_has_m" = false ] && _extra="-m {emulation}"
+
+[ "${{MUSL_WRAPPER_DEBUG:-}}" = "1" ] && echo "[musl-wrapper] ld.lld${{_extra:+ $_extra}} $*" >&2
+
+# shellcheck disable=SC2086
+exec -a ld.lld {real_path} $_extra "$@"
+"""
+
+
+_RUST_WRAPPER_PREAMBLE = """\
+# Locate the real rustup install (not our wrappers). On GitHub Actions
+# hosts, rustup's proxies live at $HOME/.cargo/bin/. CARGO_HOME and
+# RUSTUP_HOME point there -- exported so child tools see them even when
+# a user script clears HOME.
+if [ -z "${{CARGO_HOME:-}}" ]; then
+    if [ -d "${{HOME:-}}/.cargo" ]; then
+        CARGO_HOME="$HOME/.cargo"
+    elif [ -d "/home/runner/.cargo" ]; then
+        CARGO_HOME="/home/runner/.cargo"
+    fi
+fi
+if [ -z "${{RUSTUP_HOME:-}}" ]; then
+    if [ -d "${{HOME:-}}/.rustup" ]; then
+        RUSTUP_HOME="$HOME/.rustup"
+    elif [ -d "/home/runner/.rustup" ]; then
+        RUSTUP_HOME="/home/runner/.rustup"
+    fi
+fi
+export CARGO_HOME RUSTUP_HOME
+
+# Ensure the musl rust-std component is installed exactly once. rustup's
+# `target add` is a no-op if already present; we gate it on a marker so
+# we do not hit the rustup server on every invocation.
+_musl_target_marker="${{RUSTUP_HOME:-/tmp}}/.musl-target-added-{target}"
+if [ -n "$RUSTUP_HOME" ] && [ ! -e "$_musl_target_marker" ]; then
+    _auto_rustup=""
+    for _c in \\
+        "${{CARGO_HOME:-/none}}/bin/_rustup-real/rustup" \\
+        /home/runner/.cargo/bin/_rustup-real/rustup \\
+        /usr/local/cargo/bin/_rustup-real/rustup \\
+        /usr/bin/_rustup-real/rustup; do
+        if [ -x "$_c" ]; then _auto_rustup="$_c"; break; fi
+    done
+    if [ -n "$_auto_rustup" ]; then
+        "$_auto_rustup" target add {target} >/dev/null 2>&1 && \\
+            : > "$_musl_target_marker" 2>/dev/null || true
+    fi
+fi
+"""
+
+
+def _rustc_wrapper_source(arch: str) -> str:
+    target = f"{arch}-unknown-linux-musl"
+    preamble = _RUST_WRAPPER_PREAMBLE.format(target=target)
+    # Rustup's proxy binary dispatches by basename of current_exe() (not
+    # argv[0], so `exec -a` cannot help). We therefore delegate to a copy
+    # of the proxy preserved under its canonical name in _rustup-real/
+    # (the copy happens in run/action.yml prepare step).
+    return f"""#!/bin/sh
+# musl-overlay wrapper: rustc default-target={target}
+# Generated by bootstrap-build.py -- do not edit.
+
+{preamble}
+
+_real=""
+for _candidate in \\
+    "${{CARGO_HOME:-/none}}/bin/_rustup-real/rustc" \\
+    /home/runner/.cargo/bin/_rustup-real/rustc \\
+    /usr/local/cargo/bin/_rustup-real/rustc \\
+    /usr/bin/_rustup-real/rustc; do
+    if [ -x "$_candidate" ] && [ "$_candidate" != "$0" ]; then
+        _real="$_candidate"
+        break
+    fi
+done
+if [ -z "$_real" ]; then
+    echo "musl-wrapper: could not find the real rustc (_rustup-real/rustc)" >&2
+    exit 127
+fi
+
+_has_target=false
+_prev=""
+for _a in "$@"; do
+    case "$_prev" in --target|-target) _has_target=true ;; esac
+    case "$_a" in --target=*) _has_target=true ;; esac
+    _prev="$_a"
+done
+
+if [ "$_has_target" = false ]; then
+    [ "${{MUSL_WRAPPER_DEBUG:-}}" = "1" ] && echo "[musl-wrapper] $_real --target={target} $*" >&2
+    exec "$_real" --target "{target}" "$@"
+fi
+
+[ "${{MUSL_WRAPPER_DEBUG:-}}" = "1" ] && echo "[musl-wrapper] $_real $*" >&2
+exec "$_real" "$@"
+"""
+
+
+def _cargo_wrapper_source(arch: str) -> str:
+    target = f"{arch}-unknown-linux-musl"
+    preamble = _RUST_WRAPPER_PREAMBLE.format(target=target)
+    return f"""#!/bin/sh
+# musl-overlay wrapper: cargo defaults build target to {target}
+# Generated by bootstrap-build.py -- do not edit.
+
+{preamble}
+
+# Default the build target to musl when the user did not set one.
+if [ -z "${{CARGO_BUILD_TARGET:-}}" ]; then
+    CARGO_BUILD_TARGET={target}
+    export CARGO_BUILD_TARGET
+fi
+
+_real=""
+for _candidate in \\
+    "${{CARGO_HOME:-/none}}/bin/_rustup-real/cargo" \\
+    /home/runner/.cargo/bin/_rustup-real/cargo \\
+    /usr/local/cargo/bin/_rustup-real/cargo \\
+    /usr/bin/_rustup-real/cargo; do
+    if [ -x "$_candidate" ] && [ "$_candidate" != "$0" ]; then
+        _real="$_candidate"
+        break
+    fi
+done
+if [ -z "$_real" ]; then
+    echo "musl-wrapper: could not find the real cargo (_rustup-real/cargo)" >&2
+    exit 127
+fi
+
+[ "${{MUSL_WRAPPER_DEBUG:-}}" = "1" ] && echo "[musl-wrapper] $_real $*" >&2
+exec "$_real" "$@"
+"""
+
+
+def _rustup_wrapper_source(arch: str) -> str:
+    target = f"{arch}-unknown-linux-musl"
+    preamble = _RUST_WRAPPER_PREAMBLE.format(target=target)
+    return f"""#!/bin/sh
+# musl-overlay wrapper: rustup passthrough with CARGO_HOME/RUSTUP_HOME exported
+# Generated by bootstrap-build.py -- do not edit.
+
+{preamble}
+
+_real=""
+for _candidate in \\
+    "${{CARGO_HOME:-/none}}/bin/_rustup-real/rustup" \\
+    /home/runner/.cargo/bin/_rustup-real/rustup \\
+    /usr/local/cargo/bin/_rustup-real/rustup \\
+    /usr/bin/_rustup-real/rustup; do
+    if [ -x "$_candidate" ] && [ "$_candidate" != "$0" ]; then
+        _real="$_candidate"
+        break
+    fi
+done
+if [ -z "$_real" ]; then
+    echo "musl-wrapper: could not find the real rustup (_rustup-real/rustup)" >&2
+    exit 127
+fi
+
+[ "${{MUSL_WRAPPER_DEBUG:-}}" = "1" ] && echo "[musl-wrapper] $_real $*" >&2
+exec "$_real" "$@"
+"""
+
+
+def _install_musl_wrappers(root: Path, arch: str, alpine_arch: str) -> None:
+    """Generate the clang / clang++ / ld.lld / rustc wrappers inside ROOT.
+
+    The real host binaries are addressed through the underscore-prefix
+    names we rename them to in run/action.yml prepare step
+    (/usr/bin/_clang, /usr/bin/_clang++, /usr/bin/_ld.lld). rustc is
+    different -- it stays at its original path and the wrapper finds it
+    via PATH / known locations, because rustup's proxy system is harder
+    to mirror and we do not want to fight it.
+    """
+    # Locate the Alpine GCC install dir inside ROOT. apk placed it under
+    # x86_64-alpine-linux-musl/<ver>; clang expects x86_64-linux-musl.
+    alpine_triple = f"{alpine_arch}-alpine-linux-musl"
+    canonical_triple = f"{alpine_arch}-linux-musl"
+    gcc_root = root / "usr" / "lib" / "gcc"
+    alpine_gcc_dirs = sorted((gcc_root / alpine_triple).glob("[0-9]*")) if (gcc_root / alpine_triple).exists() else []
+    if not alpine_gcc_dirs:
+        fail(f"Alpine GCC install dir not found under {gcc_root / alpine_triple}")
+    gcc_install_dir = alpine_gcc_dirs[-1]
+    info(f"Alpine GCC install dir inside ROOT: {gcc_install_dir}")
+
+    # Path the wrappers will reference at runtime (post-extract on the
+    # consumer runner) -- absolute, not ROOT-relative.
+    gcc_install_dir_runtime = "/" + str(gcc_install_dir.relative_to(root)).replace(os.sep, "/")
+
+    # Mirror the Alpine triple directory under the canonical triple name
+    # so clang's default search (which uses canonical naming) finds it
+    # even without --gcc-install-dir. Useful when the user overrides
+    # --target= to the canonical form.
+    canonical_link = gcc_root / canonical_triple
+    if not canonical_link.exists():
+        canonical_link.symlink_to(alpine_triple)
+        info(f"symlinked {canonical_link.name} -> {alpine_triple}")
+
+    bin_dir = root / "usr" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    wrappers = {
+        "clang":   _clang_wrapper_source("gcc", alpine_arch, "/usr/bin/_clang",   gcc_install_dir_runtime),
+        "clang++": _clang_wrapper_source("g++", alpine_arch, "/usr/bin/_clang++", gcc_install_dir_runtime),
+        "ld.lld":  _lld_wrapper_source(alpine_arch, "/usr/bin/_ld.lld"),
+        "cc":      _clang_wrapper_source("gcc", alpine_arch, "/usr/bin/_clang",   gcc_install_dir_runtime),
+        "c++":     _clang_wrapper_source("g++", alpine_arch, "/usr/bin/_clang++", gcc_install_dir_runtime),
+    }
+    for name, source in wrappers.items():
+        target_path = bin_dir / name
+        target_path.write_text(source)
+        target_path.chmod(0o755)
+        info(f"wrote wrapper {target_path}")
+
+    # rustc / cargo / rustup wrappers ship at two locations:
+    #   /usr/local/bin/             -- discoverable via PATH on fresh
+    #                                  systems and checked by tests
+    #   /home/runner/.cargo/bin/    -- overrides rustup's proxies which
+    #                                  otherwise win on GitHub runners
+    #                                  (default PATH has ~/.cargo/bin
+    #                                  earlier than /usr/local/bin)
+    # The host proxies get renamed to _rustc / _cargo / _rustup by the
+    # prepare step in run/action.yml so our wrappers can still call them.
+    rust_wrappers = {
+        "rustc":  _rustc_wrapper_source(alpine_arch),
+        "cargo":  _cargo_wrapper_source(alpine_arch),
+        "rustup": _rustup_wrapper_source(alpine_arch),
+    }
+    for wrapper_dir in (
+        root / "usr" / "local" / "bin",
+        root / "home" / "runner" / ".cargo" / "bin",
+    ):
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        for name, source in rust_wrappers.items():
+            p = wrapper_dir / name
+            p.write_text(source)
+            p.chmod(0o755)
+            info(f"wrote wrapper {p}")
+
+    # lld / llvm-ar: ship unversioned symlinks into ROOT/usr/bin pointing
+    # at the preinstalled host-versioned binaries. Same strategy as the
+    # linux-gnu bundle -- bootstrap-test.py expects bare `lld` and
+    # `llvm-ar` in PATH but ubuntu-24.04 only exposes lld-18/llvm-ar-18.
+    # ld.lld is already a wrapper (above), so we skip it here.
+    _install_llvm_aux_symlinks_musl(root)
+
+
+def _install_llvm_aux_symlinks_musl(root: Path) -> None:
+    """Add unversioned `lld` and `llvm-ar` symlinks to the host-preinstalled
+    versioned binaries (lld-<N>, llvm-ar-<N>) so bootstrap-test.py can
+    find them in PATH after bundle extract."""
+    clang_out = run_capture("clang --version", check=False).strip()
+    import re
+    m = re.search(r"version\s+(\d+)\.", clang_out)
+    if not m:
+        fail(f"could not detect clang major version from: {clang_out}")
+    llvm_major = m.group(1)
+    dst = root / "usr" / "bin"
+    dst.mkdir(parents=True, exist_ok=True)
+    for name in ("lld", "llvm-ar"):
+        host = Path(f"/usr/bin/{name}-{llvm_major}")
+        if not host.exists():
+            fail(
+                f"expected preinstalled {host} on ubuntu-24.04 runner; "
+                f"image may have drifted -- re-evaluate musl aux symlinks"
+            )
+        link = dst / name
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(f"/usr/bin/{name}-{llvm_major}")
+        info(f"symlink: {link} -> /usr/bin/{name}-{llvm_major}")
+
+
+def _install_cargo_musl_config(root: Path, alpine_arch: str) -> None:
+    """Cargo config telling it that the default build target is musl.
+    Lives under the runner user's home; matches how GitHub-hosted
+    runners expose cargo to the `runner` user.
+    """
+    target = f"{alpine_arch}-unknown-linux-musl"
+    cargo_dir = root / "home" / "runner" / ".cargo"
+    cargo_dir.mkdir(parents=True, exist_ok=True)
+    cfg = cargo_dir / "config.toml"
+    cfg.write_text(
+        "# Musl overlay default: cargo builds target musl unless\n"
+        "# overridden on the command line. Written by bootstrap-build.py.\n"
+        "[build]\n"
+        f'target = "{target}"\n'
+    )
+    info(f"wrote {cfg}")
+
+
+def _apk_install_into_root(root: Path, alpine_arch: str) -> None:
+    """Run apk with --root pointed at our ROOT to install packages.
+
+    The apk binary shipped in the Alpine minirootfs is dynamically linked
+    against musl libc: its ELF PT_INTERP points to
+    /lib/ld-musl-<arch>.so.1, which does not exist on a plain ubuntu
+    host. Executing it directly fails with ENOENT from the kernel (Python
+    surfaces this as FileNotFoundError even though the file is clearly
+    there). We work around it by invoking the musl loader from ROOT
+    explicitly -- the same trick our ldd shim uses.
+    """
+    apk_in_root = root / "sbin" / "apk.static"
+    if not apk_in_root.exists():
+        apk_in_root = root / "sbin" / "apk"
+    if not apk_in_root.exists() or not os.access(apk_in_root, os.X_OK):
         fail(
-            "apk not found: neither ROOT/sbin/apk from the extracted "
-            "minirootfs nor a host apk binary is available"
+            f"apk not found under ROOT/sbin: expected "
+            f"{root / 'sbin' / 'apk'} (from Alpine minirootfs)"
         )
 
-    info(f"using apk: {apk}")
+    loader = root / "lib" / f"ld-musl-{alpine_arch}.so.1"
+    if not loader.exists():
+        fail(
+            f"musl loader missing from ROOT: {loader} "
+            "(minirootfs extraction did not produce it)"
+        )
+
+    # Diagnostics: show apk binary type and PT_INTERP so that if the
+    # wrapping still fails we can see what the binary actually needs.
+    run(["file", str(apk_in_root)], check=False)
+    run(["readelf", "-l", str(apk_in_root)], check=False)
+    info(f"using apk: {apk_in_root} via loader {loader}")
+
+    # Invoke: <loader> --library-path ROOT/lib:ROOT/usr/lib --argv0 /sbin/apk <apk> <args...>
+    # apk depends on libapk.so and libz.so which also live inside ROOT --
+    # the loader won't find them without an explicit library-path since
+    # the host is not Alpine. --argv0 keeps apk seeing its canonical path.
+    library_path = f"{root}/lib:{root}/usr/lib"
     cmd = [
-        apk,
+        str(loader),
+        "--library-path", library_path,
+        "--argv0", "/sbin/apk",
+        str(apk_in_root),
         "--root", str(root),
         "--initdb",
         "--no-scripts",
@@ -1617,7 +2156,24 @@ def build_linux_musl(arch: str, root: Path) -> None:
 
     # Step 6: install Alpine packages into ROOT via apk --root
     group("apk add (into ROOT)")
-    _apk_install_into_root(root)
+    _apk_install_into_root(root, alpine_arch)
+    endgroup()
+
+    # Step 7: clang / clang++ / ld.lld / rustc wrappers + cargo config
+    group("Install musl wrappers")
+    _install_musl_wrappers(root, arch, alpine_arch)
+    _install_cargo_musl_config(root, alpine_arch)
+    endgroup()
+
+    # Step 8: usr-merge. Alpine minirootfs uses separate /lib, /bin, /sbin
+    # directories; Ubuntu hosts make them symlinks into /usr. Extracting
+    # our bundle on Ubuntu would replace those symlinks with real dirs,
+    # hiding glibc multiarch paths like /lib/x86_64-linux-gnu. Move all
+    # content under /usr/ so the bundle only ships usr/ entries and the
+    # host symlinks survive tar extract.
+    group("usr-merge top-level dirs")
+    for top in ("lib", "lib64", "bin", "sbin"):
+        _usr_merge_dir(root, top)
     endgroup()
 
     files = sum(1 for _ in root.rglob("*"))

@@ -1211,7 +1211,7 @@ def group_platform_detect() -> None:
 # ============================================================================
 def group_libcxx() -> None:
     """Validate the libc++ payload that bootstrap-build.py ships into the
-    bundle (iteration 4). Tests:
+    bundle. Tests:
       1. clang++ -stdlib=libc++ links and runs (basic)
       2. clang++ -stdlib=libc++ with <vector> + <algorithm>
          (real header coverage -- catches missing libc++ headers)
@@ -1263,7 +1263,7 @@ def group_libcxx() -> None:
         r = run(["clang++", "-stdlib=libc++", "-o", str(out), str(srcp)])
         if r.returncode != 0:
             fail("clang++ -stdlib=libc++ vector+algorithm",
-                 f"compile failed: {r.stderr.strip()[:200]}")
+                 f"compile failed: {r.stderr.strip()[:1200]}")
         else:
             r2 = run([str(out)])
             if r2.returncode == 0 and "1 1 3 4 5 9" in r2.stdout:
@@ -1285,7 +1285,7 @@ def group_libcxx() -> None:
             ])
             if r.returncode != 0:
                 fail("clang++ -stdlib=libc++ -static",
-                     f"compile failed: {r.stderr.strip()[:200]}")
+                     f"compile failed: {r.stderr.strip()[:1200]}")
             else:
                 r2 = run([str(out)])
                 if r2.returncode == 0:

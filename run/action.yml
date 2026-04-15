@@ -57,6 +57,66 @@ runs:
         TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:${REPO}:pull" | jq -r .token)
         DIGEST=$(curl -fsSL -H "Authorization: Bearer ${TOKEN}" -H "Accept: application/vnd.oci.image.manifest.v1+json" "${BASE}/manifests/latest" | jq -r '.layers[0].digest')
         curl -fsSL -H "Authorization: Bearer ${TOKEN}" "${BASE}/blobs/${DIGEST}" -o "${WORK}/patch.tar.gz"
+
+        # Per-platform prepare: move aside host files that the bundle
+        # will replace (or that must disappear for the musl overlay to
+        # look native). Underscore prefix mirrors what we do for
+        # windows-arm64 LLVM. Non-fatal if a target is absent.
+        case "$PLATFORM" in
+          linux-x64-musl|linux-arm64-musl)
+            ARCH="$(uname -m)"
+            case "$ARCH" in
+              x86_64)  MULTIARCH="x86_64-linux-gnu" ;;
+              aarch64) MULTIARCH="aarch64-linux-gnu" ;;
+            esac
+            _rename() {
+              SRC="$1"; PARENT="$(dirname "$SRC")"; BASE="$(basename "$SRC")"
+              [ -e "$SRC" ] || [ -L "$SRC" ] || return 0
+              sudo mv "$SRC" "$PARENT/_$BASE"
+            }
+            _rename "/etc/lsb-release"
+            _rename "/usr/include/${MULTIARCH}"
+            _rename "/usr/bin/clang"
+            _rename "/usr/bin/clang++"
+            _rename "/usr/bin/cc"
+            _rename "/usr/bin/c++"
+            _rename "/usr/bin/ld.lld"
+            # The wrappers we install invoke /usr/bin/_clang etc, but
+            # Ubuntu ships unversioned /usr/bin/clang as a symlink to
+            # /etc/alternatives/clang -> /usr/bin/clang-18. Make sure
+            # _clang, _clang++, _ld.lld resolve to the real versioned
+            # binary, bypassing the alternatives chain.
+            for pair in "clang clang-18" "clang++ clang++-18" "ld.lld ld.lld-18"; do
+              set -- $pair
+              UNV="$1"; VER="$2"
+              if [ ! -e "/usr/bin/_$UNV" ] && [ -x "/usr/bin/$VER" ]; then
+                sudo ln -sf "/usr/bin/$VER" "/usr/bin/_$UNV"
+              fi
+            done
+            # Rustup's proxies live at /home/runner/.cargo/bin/ and take
+            # priority over /usr/local/bin on the default GitHub runner
+            # PATH. Rename them aside so our bundle's rustc/cargo/rustup
+            # wrappers (shipped at the same path) get invoked instead --
+            # our wrappers then call back into the real rustup proxies
+            # via the underscore-prefixed names.
+            # Rustup proxies dispatch by basename of current_exe() (not
+            # argv[0]), so we cannot just `exec -a rustc _rustc` -- the
+            # proxy binary must physically live at a path whose basename
+            # is `rustc` / `cargo` / `rustup`. Copy the originals to a
+            # separate directory so our wrappers (shipped at the default
+            # ~/.cargo/bin paths) can delegate into real, correctly-named
+            # proxy binaries.
+            REAL_DIR="/home/runner/.cargo/bin/_rustup-real"
+            sudo mkdir -p "$REAL_DIR"
+            for tool in rustc cargo rustup; do
+              SRC="/home/runner/.cargo/bin/$tool"
+              if [ -e "$SRC" ] && [ ! -e "$REAL_DIR/$tool" ]; then
+                sudo cp -a "$SRC" "$REAL_DIR/$tool"
+              fi
+            done
+            ;;
+        esac
+
         # Extract bundle at filesystem root. Do NOT swallow stderr -- a
         # failure here must stop the bootstrap loudly instead of leaking
         # into later steps as confusing "command not found" / linker
